@@ -1,0 +1,1 @@
+test_vlmrunner.exe -model "C:\hongbo\test\Qwen2.5-VL-3B-Instruct.tar.gz" -modelname zhaohb_testvl:v1 -device GPU
