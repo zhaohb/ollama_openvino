@@ -47,6 +47,8 @@ type GenerateRequest struct {
 	// the library at https://ollama.com/library
 	Model string `json:"model"`
 
+	ModelBackend string `json:"modelbackend"`
+
 	ModelType string `json:"modeltype"`
 
 	InferDevice string `json:"inferdevice"`
@@ -409,16 +411,17 @@ type CreateRequest struct {
 	Stream   *bool  `json:"stream,omitempty"`
 	Quantize string `json:"quantize,omitempty"`
 
-	From        string            `json:"from,omitempty"`
-	Files       map[string]string `json:"files,omitempty"`
-	Adapters    map[string]string `json:"adapters,omitempty"`
-	Template    string            `json:"template,omitempty"`
-	License     any               `json:"license,omitempty"`
-	System      string            `json:"system,omitempty"`
-	ModelType   string            `json:"modeltype,omitempty"`
-	InferDevice string            `json:"inferdevice,omitempty"`
-	Parameters  map[string]any    `json:"parameters,omitempty"`
-	Messages    []Message         `json:"messages,omitempty"`
+	From         string            `json:"from,omitempty"`
+	Files        map[string]string `json:"files,omitempty"`
+	Adapters     map[string]string `json:"adapters,omitempty"`
+	Template     string            `json:"template,omitempty"`
+	License      any               `json:"license,omitempty"`
+	System       string            `json:"system,omitempty"`
+	ModelBackend string            `json:"modelbackend,omitempty"`
+	ModelType    string            `json:"modeltype,omitempty"`
+	InferDevice  string            `json:"inferdevice,omitempty"`
+	Parameters   map[string]any    `json:"parameters,omitempty"`
+	Messages     []Message         `json:"messages,omitempty"`
 
 	// Deprecated: set the model name with Model instead
 	Name string `json:"name"`
@@ -456,6 +459,7 @@ type ShowResponse struct {
 	Parameters    string             `json:"parameters,omitempty"`
 	Template      string             `json:"template,omitempty"`
 	System        string             `json:"system,omitempty"`
+	ModelBackend  string             `json:"modelbackend,omitempty"`
 	ModelType     string             `json:"modeltype,omitempty"`
 	InferDevice   string             `json:"inferdevice,omitempty"`
 	Details       ModelDetails       `json:"details,omitempty"`
