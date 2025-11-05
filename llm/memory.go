@@ -17,7 +17,7 @@ import (
 // pickBestFullFitByLibrary will try to find the optimal placement of the model in the available GPUs where the model fully fits
 // The list of GPUs returned will always be the same brand (library)
 // If the model can not be fit fully within the available GPU(s) nil is returned
-func pickBestFullFitByLibrary(f *ggml.GGML, modelPath string, projectors []string, adapters []string, opts api.Options, gpus discover.GpuInfoList, numParallel int) discover.GpuInfoList {
+func PickBestFullFitByLibrary(f *ggml.GGML, modelPath string, projectors []string, adapters []string, opts api.Options, gpus discover.GpuInfoList, numParallel int) discover.GpuInfoList {
 	for _, gl := range gpus.ByLibrary() {
 		sgl := append(make(discover.GpuInfoList, 0, len(gl)), gl...)
 
@@ -63,7 +63,7 @@ func pickBestFullFitByLibrary(f *ggml.GGML, modelPath string, projectors []strin
 }
 
 // If multiple Libraries are detected, pick the Library which loads the most layers for the model
-func pickBestPartialFitByLibrary(f *ggml.GGML, projectors []string, adapters []string, opts api.Options, gpus discover.GpuInfoList, numParallel int) discover.GpuInfoList {
+func PickBestPartialFitByLibrary(f *ggml.GGML, projectors []string, adapters []string, opts api.Options, gpus discover.GpuInfoList, numParallel int) discover.GpuInfoList {
 	byLibrary := gpus.ByLibrary()
 	if len(byLibrary) <= 1 {
 		return gpus
@@ -86,7 +86,7 @@ func PredictServerFit(allGpus discover.GpuInfoList, f *ggml.GGML, adapters, proj
 	var estimatedVRAM uint64
 	for _, gpus := range allGpus.ByLibrary() {
 		var layerCount int
-		estimate := estimateGPULayers(gpus, f, projectors, opts, numParallel)
+		estimate := EstimateGPULayers(gpus, f, projectors, opts, numParallel)
 		layerCount, estimatedVRAM = estimate.Layers, estimate.VRAMSize
 		if opts.NumGPU < 0 {
 			if layerCount > 0 && layerCount >= int(f.KV().BlockCount()+1) {
@@ -137,7 +137,7 @@ type MemoryEstimate struct {
 
 // Given a model and one or more GPU targets, predict how many layers and bytes we can load, and the total size
 // The GPUs provided must all be the same Library
-func estimateGPULayers(gpus []discover.GpuInfo, f *ggml.GGML, projectors []string, opts api.Options, numParallel int) MemoryEstimate {
+func EstimateGPULayers(gpus []discover.GpuInfo, f *ggml.GGML, projectors []string, opts api.Options, numParallel int) MemoryEstimate {
 	// Graph size for a partial offload, applies to all GPUs
 	var graphPartialOffload uint64
 
@@ -177,7 +177,7 @@ func estimateGPULayers(gpus []discover.GpuInfo, f *ggml.GGML, projectors []strin
 	slog.Debug("evaluating", "library", gpus[0].Library, "gpu_count", len(gpus), "available", availableList)
 
 	for _, projector := range projectors {
-		llamaEngineProjectorWeights += projectorMemoryRequirements(projector)
+		llamaEngineProjectorWeights += ProjectorMemoryRequirements(projector)
 	}
 	if llamaEngineProjectorWeights == 0 {
 		ollamaEngineProjectorWeights, ollamaEngineProjectorGraph = f.VisionGraphSize()
@@ -474,7 +474,7 @@ func (m MemoryEstimate) LogValue() slog.Value {
 	return slog.GroupValue(attrs...)
 }
 
-func projectorMemoryRequirements(filename string) (weights uint64) {
+func ProjectorMemoryRequirements(filename string) (weights uint64) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return 0

@@ -5,7 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/ollama/ollama/llm"
+	llamaserver "github.com/ollama/ollama/llm/llama"
 )
 
 // input is an element of the prompt to process, either
@@ -16,7 +16,7 @@ type Input struct {
 
 type VlmInput struct {
 	Prompt string
-	Images []llm.ImageData
+	Images []llamaserver.ImageData
 }
 
 type Sequence struct {
@@ -139,7 +139,7 @@ func (i *VlmInput) GetPrompt() string {
 	return i.Prompt
 }
 
-func (i *VlmInput) GetImages() []llm.ImageData {
+func (i *VlmInput) GetImages() []llamaserver.ImageData {
 	return i.Images
 }
 

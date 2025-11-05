@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"reflect"
@@ -20,18 +21,22 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
-	"github.com/ollama/ollama/llm"
+	genaillm "github.com/ollama/ollama/llm/genai"
+	llamaserver "github.com/ollama/ollama/llm/llama"
 	"github.com/ollama/ollama/types/model"
 )
 
 type LlmRequest struct {
-	ctx             context.Context //nolint:containedctx
-	model           *Model
-	opts            api.Options
-	sessionDuration *api.Duration
-	successCh       chan *runnerRef
-	errCh           chan error
-	schedAttempts   uint
+	ctx              context.Context //nolint:containedctx
+	model            *Model
+	modeltype        string
+	modelbackend     string
+	modelinferdevice string
+	opts             api.Options
+	sessionDuration  *api.Duration
+	successCh        chan *runnerRef
+	errCh            chan error
+	schedAttempts    uint
 }
 
 type Scheduler struct {
@@ -47,14 +52,15 @@ type Scheduler struct {
 	// including by evicting one or more other models. We can only load
 	// one model at a time but new requests to models that already loaded can
 	// happen in parallel
-	activeLoading llm.LlamaServer
+	activeLoading llamaserver.LlamaServer
 	loaded        map[string]*runnerRef
 
-	loadFn       func(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoList, requireFull bool) bool
-	newServerFn  func(gpus discover.GpuInfoList, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error)
-	getGpuFn     func() discover.GpuInfoList
-	getCpuFn     func() discover.GpuInfoList
-	reschedDelay time.Duration
+	loadFn           func(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoList, requireFull bool) bool
+	newServerFn      func(gpus discover.GpuInfoList, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llamaserver.LlamaServer, error)
+	newGenaiServerFn func(gpus discover.GpuInfoList, model string, modelname string, modeltype string, inferdevice string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (genaillm.GenaiServer, error)
+	getGpuFn         func() discover.GpuInfoList
+	getCpuFn         func() discover.GpuInfoList
+	reschedDelay     time.Duration
 }
 
 // Default automatic value for number of models we allow per GPU
@@ -67,18 +73,46 @@ var ErrMaxQueue = errors.New("server busy, please try again.  maximum pending re
 func InitScheduler(ctx context.Context) *Scheduler {
 	maxQueue := envconfig.MaxQueue()
 	sched := &Scheduler{
-		pendingReqCh:  make(chan *LlmRequest, maxQueue),
-		finishedReqCh: make(chan *LlmRequest, maxQueue),
-		expiredCh:     make(chan *runnerRef, maxQueue),
-		unloadedCh:    make(chan any, maxQueue),
-		loaded:        make(map[string]*runnerRef),
-		newServerFn:   llm.NewLlamaServer,
-		getGpuFn:      discover.GetGPUInfo,
-		getCpuFn:      discover.GetCPUInfo,
-		reschedDelay:  250 * time.Millisecond,
+		pendingReqCh:     make(chan *LlmRequest, maxQueue),
+		finishedReqCh:    make(chan *LlmRequest, maxQueue),
+		expiredCh:        make(chan *runnerRef, maxQueue),
+		unloadedCh:       make(chan any, maxQueue),
+		loaded:           make(map[string]*runnerRef),
+		newServerFn:      llamaserver.NewLlamaServer,
+		newGenaiServerFn: genaillm.NewGenaiServer,
+		getGpuFn:         discover.GetGPUInfo,
+		getCpuFn:         discover.GetCPUInfo,
+		reschedDelay:     250 * time.Millisecond,
 	}
 	sched.loadFn = sched.load
 	return sched
+}
+
+func (s *Scheduler) GetOvRunner(c context.Context, model *Model, opts api.Options, sessionDuration *api.Duration) (chan *runnerRef, chan error) {
+	if opts.NumCtx < 4 {
+		opts.NumCtx = 4
+	}
+
+	// log.Printf("model type: ", model.Type)
+	// log.Printf("model inferdevice: ", model.InferDevice)
+	// log.Printf("model opts: ", opts)
+	req := &LlmRequest{
+		ctx:              c,
+		model:            model,
+		modeltype:        model.ModelType,
+		modelbackend:     model.ModelBackend,
+		modelinferdevice: model.InferDevice,
+		sessionDuration:  sessionDuration,
+		opts:             opts,
+		successCh:        make(chan *runnerRef),
+		errCh:            make(chan error, 1),
+	}
+	select {
+	case s.pendingReqCh <- req:
+	default:
+		req.errCh <- ErrMaxQueue
+	}
+	return req.successCh, req.errCh
 }
 
 // context must be canceled to decrement ref count and release the runner
@@ -193,33 +227,40 @@ func (s *Scheduler) processPending(ctx context.Context) {
 						}
 					}
 
-					// Load model for fitting
-					ggml, err := llm.LoadModel(pending.model.ModelPath, 1024)
-					if err != nil {
-						pending.errCh <- err
+					if pending.model.ModelBackend != "OpenVINO" {
+						// Load model for fitting
+						ggml, err := llamaserver.LoadModel(pending.model.ModelPath, 1024)
+						if err != nil {
+							pending.errCh <- err
+							break
+						}
+
+						// Update free memory from currently loaded models
+						s.updateFreeSpace(gpus)
+
+						if loadedCount == 0 {
+							// No models loaded. Load the model but prefer the best fit.
+							slog.Debug("loading first model", "model", pending.model.ModelPath)
+							s.loadFn(pending, ggml, gpus, false)
+							break
+						}
+
+						// More than one loaded model, so we have to see if the
+						// new one fits
+
+						needEvict := s.loadFn(pending, ggml, gpus, true)
+						if !needEvict {
+							slog.Debug("new model fits with existing models, loading")
+							break
+						}
+
+						runnerToExpire = s.findRunnerToUnload()
+					} else {
+						log.Printf("loading first openvino model: %s", pending.model.ShortName)
+						s.loadFn(pending, nil, gpus, true)
 						break
 					}
-
-					// Update free memory from currently loaded models
-					s.updateFreeSpace(gpus)
-
-					if loadedCount == 0 {
-						// No models loaded. Load the model but prefer the best fit.
-						slog.Debug("loading first model", "model", pending.model.ModelPath)
-						s.loadFn(pending, ggml, gpus, false)
-						break
-					}
-
-					// More than one loaded model, so we have to see if the
-					// new one fits
-
-					needEvict := s.loadFn(pending, ggml, gpus, true)
-					if !needEvict {
-						slog.Debug("new model fits with existing models, loading")
-						break
-					}
-
-					runnerToExpire = s.findRunnerToUnload()
+					log.Printf("llmrequest: %s, %s, %s", pending.modeltype, s.loaded[pending.model.ShortName], pending.model.ShortName)
 				}
 
 				if runnerToExpire == nil {
@@ -407,95 +448,147 @@ func (s *Scheduler) load(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoLis
 	s.loadedMu.Lock()
 	llama := s.activeLoading
 
-	if llama == nil {
-		var err error
-		llama, err = s.newServerFn(gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
+	if req.modelbackend != "OpenVINO" {
+		if llama == nil {
+			var err error
+			llama, err = s.newServerFn(gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
+			if err != nil {
+				// some older models are not compatible with newer versions of llama.cpp
+				// show a generalized compatibility error until there is a better way to
+				// check for model compatibility
+				if errors.Is(err, ggml.ErrUnsupportedFormat) || strings.Contains(err.Error(), "failed to load model") {
+					err = fmt.Errorf("%v: this model may be incompatible with your version of Ollama. If you previously pulled this model, try updating it by running `ollama pull %s`", err, req.model.ShortName)
+				}
+				slog.Info("NewLlamaServer failed", "model", req.model.ModelPath, "error", err)
+				req.errCh <- err
+				s.loadedMu.Unlock()
+				return false
+			}
+
+			s.activeLoading = llama
+		} else {
+			if s.activeLoading.ModelPath() != req.model.ModelPath {
+				panic(fmt.Errorf("attempting to load different model after eviction (original %v new %v)", s.activeLoading.ModelPath(), req.model.ModelPath))
+			}
+		}
+
+		s.loadedMu.Unlock()
+
+		err := llama.Load(req.ctx, gpus, requireFull)
+		if err != nil {
+			if errors.Is(err, llamaserver.ErrLoadRequiredFull) {
+				return true
+			}
+
+			slog.Info("Load failed", "model", req.model.ModelPath, "error", err)
+			s.activeLoading.Close()
+			s.activeLoading = nil
+			req.errCh <- err
+			return false
+		}
+
+		runner := &runnerRef{
+			model:           req.model,
+			modelPath:       req.model.ModelPath,
+			llama:           llama,
+			Options:         &req.opts,
+			sessionDuration: sessionDuration,
+			gpus:            gpus,
+			vramSize:        llama.VRAMSize(),
+			totalSize:       llama.TotalSize(),
+			loading:         true,
+			pid:             llama.Pid(),
+		}
+		runner.numParallel = numParallel
+		runner.refMu.Lock() // hold lock until running or aborted
+
+		s.loadedMu.Lock()
+		if oldRunner, ok := s.loaded[req.model.ModelPath]; ok {
+			// Shouldn't happen, but safeguard against leaking a runner
+			slog.Warn("model was still loaded", "old_runner", oldRunner, "new_runner", runner)
+			oldRunner.refMu.Lock()
+			oldRunner.unload()
+			oldRunner.refMu.Unlock()
+		}
+		s.activeLoading = nil
+		s.loaded[req.model.ModelPath] = runner
+		slog.Info("loaded runners", "count", len(s.loaded))
+		s.loadedMu.Unlock()
+
+		go func() {
+			defer runner.refMu.Unlock()
+			if err = llama.WaitUntilRunning(req.ctx); err != nil {
+				slog.Error("error loading llama server", "error", err)
+				req.errCh <- err
+				slog.Debug("triggering expiration for failed load", "runner", runner)
+				s.expiredCh <- runner
+				return
+			}
+			slog.Debug("finished setting up", "runner", runner)
+			if runner.pid < 0 {
+				runner.pid = llama.Pid()
+			}
+			runner.refCount++
+			runner.loading = false
+			go func() {
+				<-req.ctx.Done()
+				slog.Debug("context for request finished")
+				s.finishedReqCh <- req
+			}()
+			req.successCh <- runner
+		}()
+	} else {
+		genai, err := s.newGenaiServerFn(gpus, req.model.ModelPath, req.model.ShortName, req.model.ModelType, req.model.InferDevice, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
+		log.Printf("---model name: %s, %s", req.model.Name, req.model.ShortName)
 		if err != nil {
 			// some older models are not compatible with newer versions of llama.cpp
 			// show a generalized compatibility error until there is a better way to
 			// check for model compatibility
-			if errors.Is(err, ggml.ErrUnsupportedFormat) || strings.Contains(err.Error(), "failed to load model") {
-				err = fmt.Errorf("%v: this model may be incompatible with your version of Ollama. If you previously pulled this model, try updating it by running `ollama pull %s`", err, req.model.ShortName)
-			}
-			slog.Info("NewLlamaServer failed", "model", req.model.ModelPath, "error", err)
+			slog.Info("NewGenaiServer failed", "model", req.model.ModelPath, "error", err)
 			req.errCh <- err
-			s.loadedMu.Unlock()
 			return false
 		}
 
-		s.activeLoading = llama
-	} else {
-		if s.activeLoading.ModelPath() != req.model.ModelPath {
-			panic(fmt.Errorf("attempting to load different model after eviction (original %v new %v)", s.activeLoading.ModelPath(), req.model.ModelPath))
+		runner := &runnerRef{
+			model:           req.model,
+			modelPath:       req.model.ModelPath,
+			genai:           genai,
+			Options:         &req.opts,
+			sessionDuration: sessionDuration,
+			gpus:            gpus,
+			// estimatedVRAM:   llama.EstimatedVRAM(),
+			// estimatedTotal:  llama.EstimatedTotal(),
+			loading:  true,
+			refCount: 1,
 		}
-	}
+		runner.numParallel = numParallel
+		runner.refMu.Lock()
 
-	s.loadedMu.Unlock()
+		s.loadedMu.Lock()
+		s.loaded[req.model.ShortName] = runner
+		slog.Info("loaded runners", "count", len(s.loaded))
+		s.loadedMu.Unlock()
 
-	err := llama.Load(req.ctx, gpus, requireFull)
-	if err != nil {
-		if errors.Is(err, llm.ErrLoadRequiredFull) {
-			return true
-		}
-
-		slog.Info("Load failed", "model", req.model.ModelPath, "error", err)
-		s.activeLoading.Close()
-		s.activeLoading = nil
-		req.errCh <- err
-		return false
-	}
-
-	runner := &runnerRef{
-		model:           req.model,
-		modelPath:       req.model.ModelPath,
-		llama:           llama,
-		Options:         &req.opts,
-		sessionDuration: sessionDuration,
-		gpus:            gpus,
-		vramSize:        llama.VRAMSize(),
-		totalSize:       llama.TotalSize(),
-		loading:         true,
-		pid:             llama.Pid(),
-	}
-	runner.numParallel = numParallel
-	runner.refMu.Lock() // hold lock until running or aborted
-
-	s.loadedMu.Lock()
-	if oldRunner, ok := s.loaded[req.model.ModelPath]; ok {
-		// Shouldn't happen, but safeguard against leaking a runner
-		slog.Warn("model was still loaded", "old_runner", oldRunner, "new_runner", runner)
-		oldRunner.refMu.Lock()
-		oldRunner.unload()
-		oldRunner.refMu.Unlock()
-	}
-	s.activeLoading = nil
-	s.loaded[req.model.ModelPath] = runner
-	slog.Info("loaded runners", "count", len(s.loaded))
-	s.loadedMu.Unlock()
-
-	go func() {
-		defer runner.refMu.Unlock()
-		if err = llama.WaitUntilRunning(req.ctx); err != nil {
-			slog.Error("error loading llama server", "error", err)
-			req.errCh <- err
-			slog.Debug("triggering expiration for failed load", "runner", runner)
-			s.expiredCh <- runner
-			return
-		}
-		slog.Debug("finished setting up", "runner", runner)
-		if runner.pid < 0 {
-			runner.pid = llama.Pid()
-		}
-		runner.refCount++
-		runner.loading = false
 		go func() {
-			<-req.ctx.Done()
-			slog.Debug("context for request finished")
-			s.finishedReqCh <- req
+			defer runner.refMu.Unlock()
+			if err = genai.WaitUntilRunning(req.ctx); err != nil {
+				slog.Error("error loading llama server", "error", err)
+				runner.refCount--
+				req.errCh <- err
+				slog.Debug("triggering expiration for failed load", "model", runner.modelPath)
+				s.expiredCh <- runner
+				return
+			}
+			slog.Debug("finished setting up runner", "model", req.model.ShortName)
+			runner.loading = false
+			go func() {
+				<-req.ctx.Done()
+				slog.Debug("context for request finished")
+				s.finishedReqCh <- req
+			}()
+			req.successCh <- runner
 		}()
-		req.successCh <- runner
-	}()
-
+	}
 	return false
 }
 
@@ -547,7 +640,8 @@ type runnerRef struct {
 	refMu    sync.Mutex
 	refCount uint // prevent unloading if > 0
 
-	llama     llm.LlamaServer
+	llama     llamaserver.LlamaServer
+	genai     genaillm.GenaiServer
 	pid       int
 	loading   bool                 // True only during initial load, then false forever
 	gpus      discover.GpuInfoList // Recorded at time of provisioning

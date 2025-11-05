@@ -10,6 +10,7 @@ import (
 	"image"
 	"io"
 	"io/fs"
+	"log"
 	"log/slog"
 	"math"
 	"net"
@@ -32,7 +33,8 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
-	"github.com/ollama/ollama/llm"
+	genaiserver "github.com/ollama/ollama/llm/genai"
+	llamaserver "github.com/ollama/ollama/llm/llama"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/openai"
 	"github.com/ollama/ollama/server/internal/client/ollama"
@@ -95,7 +97,7 @@ func modelOptions(model *Model, requestOpts map[string]any) (api.Options, error)
 
 // scheduleRunner schedules a runner after validating inputs such as capabilities and model options.
 // It returns the allocated runner, model instance, and consolidated options if successful and error otherwise.
-func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration) (llm.LlamaServer, *Model, *api.Options, error) {
+func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration) (llamaserver.LlamaServer, *Model, *api.Options, error) {
 	if name == "" {
 		return nil, nil, nil, fmt.Errorf("model %w", errRequired)
 	}
@@ -135,6 +137,32 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 	return runner.llama, model, &opts, nil
 }
 
+// scheduleRunner schedules a runner after validating inputs such as capabilities and model options.
+// It returns the allocated runner, model instance, and consolidated options if successful and error otherwise.
+func (s *Server) scheduleGenaiRunner(ctx context.Context, name string, modelbackend string, modeltype string, inferdevice string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration) (genaiserver.GenaiServer, *Model, *api.Options, error) {
+	if name == "" {
+		return nil, nil, nil, fmt.Errorf("model %w", errRequired)
+	}
+	model, err := GetModel(name)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	opts, err := modelOptions(model, requestOpts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	runnerCh, errCh := s.sched.GetOvRunner(ctx, model, opts, keepAlive)
+	var runner *runnerRef
+	select {
+	case runner = <-runnerCh:
+	case err = <-errCh:
+		return nil, nil, nil, err
+	}
+	return runner.genai, model, &opts, nil
+}
+
 func (s *Server) GenerateHandler(c *gin.Context) {
 	checkpointStart := time.Now()
 	var req api.GenerateRequest
@@ -145,6 +173,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	log.Printf("GenerateHandler req: %+v", req)
 
 	name := model.ParseName(req.Model)
 	if !name.IsValid() {
@@ -221,231 +251,332 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		// updated template supporting thinking
 	}
 
-	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
-	if errors.Is(err, errCapabilityCompletion) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
-		return
-	} else if err != nil {
-		handleScheduleError(c, req.Model, err)
-		return
-	}
+	log.Printf("GenerateHandler req: %+v", req)
 
-	checkpointLoaded := time.Now()
-
-	// load the model
-	if req.Prompt == "" {
-		c.JSON(http.StatusOK, api.GenerateResponse{
-			Model:      req.Model,
-			CreatedAt:  time.Now().UTC(),
-			Done:       true,
-			DoneReason: "load",
-		})
-		return
-	}
-
-	if slices.Contains(m.Config.ModelFamilies, "mllama") && len(req.Images) > 1 {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "this model only supports one image while more than one image requested"})
-		return
-	}
-
-	images := make([]llm.ImageData, len(req.Images))
-	for i := range req.Images {
-		images[i] = llm.ImageData{ID: i, Data: req.Images[i]}
-	}
-
-	prompt := req.Prompt
-	if !req.Raw {
-		tmpl := m.Template
-		if req.Template != "" {
-			tmpl, err = template.Parse(req.Template)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-		}
-
-		var values template.Values
-		if req.Suffix != "" {
-			values.Prompt = prompt
-			values.Suffix = req.Suffix
-		} else {
-			var msgs []api.Message
-			if req.System != "" {
-				msgs = append(msgs, api.Message{Role: "system", Content: req.System})
-			} else if m.System != "" {
-				msgs = append(msgs, api.Message{Role: "system", Content: m.System})
-			}
-
-			if req.Context == nil {
-				msgs = append(msgs, m.Messages...)
-			}
-
-			for _, i := range images {
-				imgPrompt := ""
-				msgs = append(msgs, api.Message{Role: "user", Content: fmt.Sprintf("[img-%d]"+imgPrompt, i.ID)})
-			}
-
-			values.Messages = append(msgs, api.Message{Role: "user", Content: req.Prompt})
-		}
-
-		values.Think = req.Think != nil && req.Think.Bool()
-		values.ThinkLevel = ""
-		if req.Think != nil {
-			values.ThinkLevel = req.Think.String()
-		}
-		values.IsThinkSet = req.Think != nil
-
-		var b bytes.Buffer
-		if req.Context != nil {
-			slog.Warn("the context field is deprecated and will be removed in a future version of Ollama")
-			s, err := r.Detokenize(c.Request.Context(), req.Context)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			b.WriteString(s)
-		}
-
-		if err := tmpl.Execute(&b, values); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if m.ModelBackend != "OpenVINO" {
+		r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
+			return
+		} else if err != nil {
+			handleScheduleError(c, req.Model, err)
 			return
 		}
 
-		prompt = b.String()
-	}
+		checkpointLoaded := time.Now()
 
-	var thinkingState *thinking.Parser
-	if !useHarmony {
-		openingTag, closingTag := thinking.InferTags(m.Template.Template)
-		if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
-			thinkingState = &thinking.Parser{
-				OpeningTag: openingTag,
-				ClosingTag: closingTag,
+		// load the model
+		if req.Prompt == "" {
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Done:       true,
+				DoneReason: "load",
+			})
+			return
+		}
+
+		if slices.Contains(m.Config.ModelFamilies, "mllama") && len(req.Images) > 1 {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "this model only supports one image while more than one image requested"})
+			return
+		}
+
+		images := make([]llamaserver.ImageData, len(req.Images))
+		for i := range req.Images {
+			images[i] = llamaserver.ImageData{ID: i, Data: req.Images[i]}
+		}
+
+		prompt := req.Prompt
+		if !req.Raw {
+			tmpl := m.Template
+			if req.Template != "" {
+				tmpl, err = template.Parse(req.Template)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+			}
+
+			var values template.Values
+			if req.Suffix != "" {
+				values.Prompt = prompt
+				values.Suffix = req.Suffix
+			} else {
+				var msgs []api.Message
+				if req.System != "" {
+					msgs = append(msgs, api.Message{Role: "system", Content: req.System})
+				} else if m.System != "" {
+					msgs = append(msgs, api.Message{Role: "system", Content: m.System})
+				}
+
+				if req.Context == nil {
+					msgs = append(msgs, m.Messages...)
+				}
+
+				for _, i := range images {
+					imgPrompt := ""
+					msgs = append(msgs, api.Message{Role: "user", Content: fmt.Sprintf("[img-%d]"+imgPrompt, i.ID)})
+				}
+
+				values.Messages = append(msgs, api.Message{Role: "user", Content: req.Prompt})
+			}
+
+			values.Think = req.Think != nil && req.Think.Bool()
+			values.ThinkLevel = ""
+			if req.Think != nil {
+				values.ThinkLevel = req.Think.String()
+			}
+			values.IsThinkSet = req.Think != nil
+
+			var b bytes.Buffer
+			if req.Context != nil {
+				slog.Warn("the context field is deprecated and will be removed in a future version of Ollama")
+				s, err := r.Detokenize(c.Request.Context(), req.Context)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				b.WriteString(s)
+			}
+
+			if err := tmpl.Execute(&b, values); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			prompt = b.String()
+		}
+
+		var thinkingState *thinking.Parser
+		if !useHarmony {
+			openingTag, closingTag := thinking.InferTags(m.Template.Template)
+			if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
+				thinkingState = &thinking.Parser{
+					OpeningTag: openingTag,
+					ClosingTag: closingTag,
+				}
 			}
 		}
-	}
 
-	ch := make(chan any)
-	go func() {
-		// TODO (jmorganca): avoid building the response twice both here and below
-		var sb strings.Builder
-		defer close(ch)
-		if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
-			Prompt:  prompt,
-			Images:  images,
-			Format:  req.Format,
-			Options: opts,
-		}, func(cr llm.CompletionResponse) {
-			res := api.GenerateResponse{
-				Model:     req.Model,
-				CreatedAt: time.Now().UTC(),
-				Response:  cr.Content,
-				Done:      cr.Done,
-				Metrics: api.Metrics{
-					PromptEvalCount:    cr.PromptEvalCount,
-					PromptEvalDuration: cr.PromptEvalDuration,
-					EvalCount:          cr.EvalCount,
-					EvalDuration:       cr.EvalDuration,
-				},
-			}
+		ch := make(chan any)
+		go func() {
+			// TODO (jmorganca): avoid building the response twice both here and below
+			var sb strings.Builder
+			defer close(ch)
+			if err := r.Completion(c.Request.Context(), llamaserver.CompletionRequest{
+				Prompt:  prompt,
+				Images:  images,
+				Format:  req.Format,
+				Options: opts,
+			}, func(cr llamaserver.CompletionResponse) {
+				res := api.GenerateResponse{
+					Model:     req.Model,
+					CreatedAt: time.Now().UTC(),
+					Response:  cr.Content,
+					Done:      cr.Done,
+					Metrics: api.Metrics{
+						PromptEvalCount:    cr.PromptEvalCount,
+						PromptEvalDuration: cr.PromptEvalDuration,
+						EvalCount:          cr.EvalCount,
+						EvalDuration:       cr.EvalDuration,
+					},
+				}
 
-			if useHarmony {
-				content, thinking, toolContent := harmonyMessageHandler.AddContent(cr.Content, harmonyToolParser)
-				res.Response = content
-				res.Thinking = thinking
-				harmonyToolParser.Add(toolContent)
-			} else if thinkingState != nil {
-				thinking, content := thinkingState.AddContent(cr.Content)
-				res.Thinking = thinking
-				res.Response = content
-			}
-
-			if _, err := sb.WriteString(cr.Content); err != nil {
-				ch <- gin.H{"error": err.Error()}
-			}
-
-			if cr.Done {
 				if useHarmony {
-					toolName, toolContent := harmonyToolParser.Drain()
-					if toolName != nil {
-						*toolName = strings.TrimPrefix(*toolName, "functions.")
-						var args api.ToolCallFunctionArguments
-						if err := json.Unmarshal([]byte(toolContent), &args); err != nil {
-							errStr := fmt.Sprintf("error parsing tool call: raw='%s', err=%s", toolContent, err.Error())
-							ch <- gin.H{"error": errStr}
+					content, thinking, toolContent := harmonyMessageHandler.AddContent(cr.Content, harmonyToolParser)
+					res.Response = content
+					res.Thinking = thinking
+					harmonyToolParser.Add(toolContent)
+				} else if thinkingState != nil {
+					thinking, content := thinkingState.AddContent(cr.Content)
+					res.Thinking = thinking
+					res.Response = content
+				}
+
+				if _, err := sb.WriteString(cr.Content); err != nil {
+					ch <- gin.H{"error": err.Error()}
+				}
+
+				if cr.Done {
+					if useHarmony {
+						toolName, toolContent := harmonyToolParser.Drain()
+						if toolName != nil {
+							*toolName = strings.TrimPrefix(*toolName, "functions.")
+							var args api.ToolCallFunctionArguments
+							if err := json.Unmarshal([]byte(toolContent), &args); err != nil {
+								errStr := fmt.Sprintf("error parsing tool call: raw='%s', err=%s", toolContent, err.Error())
+								ch <- gin.H{"error": errStr}
+								return
+							}
+
+							res.ToolCalls = append(res.ToolCalls, api.ToolCall{
+								Function: api.ToolCallFunction{
+									Name:      *toolName,
+									Arguments: args,
+								},
+							})
+						}
+					}
+
+					res.DoneReason = cr.DoneReason.String()
+					res.TotalDuration = time.Since(checkpointStart)
+					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+
+					if !req.Raw {
+						tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
+						if err != nil {
+							ch <- gin.H{"error": err.Error()}
 							return
 						}
-
-						res.ToolCalls = append(res.ToolCalls, api.ToolCall{
-							Function: api.ToolCallFunction{
-								Name:      *toolName,
-								Arguments: args,
-							},
-						})
+						res.Context = tokens
 					}
 				}
 
-				res.DoneReason = cr.DoneReason.String()
-				res.TotalDuration = time.Since(checkpointStart)
-				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
-
-				if !req.Raw {
-					tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
-					if err != nil {
-						ch <- gin.H{"error": err.Error()}
-						return
+				if useHarmony {
+					// only send messages with meaningful content (empty messages confuse clients)
+					if res.Response != "" || res.Thinking != "" || res.Done || len(res.ToolCalls) > 0 {
+						ch <- res
 					}
-					res.Context = tokens
+
+					return
+				}
+
+				ch <- res
+			}); err != nil {
+				ch <- gin.H{"error": err.Error()}
+			}
+		}()
+
+		if req.Stream != nil && !*req.Stream {
+			var r api.GenerateResponse
+			var sbThinking strings.Builder
+			var sbContent strings.Builder
+			for rr := range ch {
+				switch t := rr.(type) {
+				case api.GenerateResponse:
+					sbThinking.WriteString(t.Thinking)
+					sbContent.WriteString(t.Response)
+					r = t
+				case gin.H:
+					msg, ok := t["error"].(string)
+					if !ok {
+						msg = "unexpected error format in response"
+					}
+
+					c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
+					return
+				default:
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
+					return
 				}
 			}
 
-			if useHarmony {
-				// only send messages with meaningful content (empty messages confuse clients)
-				if res.Response != "" || res.Thinking != "" || res.Done || len(res.ToolCalls) > 0 {
-					ch <- res
-				}
+			r.Thinking = sbThinking.String()
+			r.Response = sbContent.String()
 
-				return
-			}
-
-			ch <- res
-		}); err != nil {
-			ch <- gin.H{"error": err.Error()}
-		}
-	}()
-
-	if req.Stream != nil && !*req.Stream {
-		var r api.GenerateResponse
-		var sbThinking strings.Builder
-		var sbContent strings.Builder
-		for rr := range ch {
-			switch t := rr.(type) {
-			case api.GenerateResponse:
-				sbThinking.WriteString(t.Thinking)
-				sbContent.WriteString(t.Response)
-				r = t
-			case gin.H:
-				msg, ok := t["error"].(string)
-				if !ok {
-					msg = "unexpected error format in response"
-				}
-
-				c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
-				return
-			default:
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
-				return
-			}
+			c.JSON(http.StatusOK, r)
+			return
 		}
 
-		r.Thinking = sbThinking.String()
-		r.Response = sbContent.String()
+		streamResponse(c, ch)
+	} else {
+		log.Printf("GenerateHandler model: %+v", m)
+		log.Printf("GenerateHandler model backend: %s", m.ModelBackend)
+		log.Printf("GenerateHandler model type: %s", m.ModelType)
+		log.Printf("GenerateHandler model infer device: %s", m.InferDevice)
 
-		c.JSON(http.StatusOK, r)
-		return
+		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), m.ModelBackend, m.ModelType, m.InferDevice, caps, req.Options, req.KeepAlive)
+
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
+			return
+		} else if err != nil {
+			handleScheduleError(c, req.Model, err)
+			return
+		}
+
+		checkpointLoaded := time.Now()
+
+		// load the model
+		if req.Prompt == "" {
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Done:       true,
+				DoneReason: "load",
+			})
+			return
+		}
+		prompt := req.Prompt
+		ch := make(chan any)
+
+		go func() {
+			// TODO (jmorganca): avoid building the response twice both here and below
+			var sb strings.Builder
+			defer close(ch)
+			if err := r.Completion(c.Request.Context(), llamaserver.CompletionRequest{
+				Prompt:  prompt,
+				Images:  nil,
+				Format:  req.Format,
+				Options: opts,
+			}, func(cr llamaserver.CompletionResponse) {
+				res := api.GenerateResponse{
+					Model:     req.Model,
+					CreatedAt: time.Now().UTC(),
+					Response:  cr.Content,
+					Done:      cr.Done,
+					Metrics: api.Metrics{
+						PromptEvalCount:    cr.PromptEvalCount,
+						PromptEvalDuration: cr.PromptEvalDuration,
+						EvalCount:          cr.EvalCount,
+						EvalDuration:       cr.EvalDuration,
+					},
+				}
+
+				if _, err := sb.WriteString(cr.Content); err != nil {
+					ch <- gin.H{"error": err.Error()}
+				}
+
+				if cr.Done {
+					res.TotalDuration = time.Since(checkpointStart)
+					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+				}
+
+				ch <- res
+			}); err != nil {
+				ch <- gin.H{"error": err.Error()}
+			}
+		}()
+
+		if req.Stream != nil && !*req.Stream {
+			var r api.GenerateResponse
+			var sb strings.Builder
+			for rr := range ch {
+				switch t := rr.(type) {
+				case api.GenerateResponse:
+					sb.WriteString(t.Response)
+					r = t
+				case gin.H:
+					msg, ok := t["error"].(string)
+					if !ok {
+						msg = "unexpected error format in response"
+					}
+
+					c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
+					return
+				default:
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
+					return
+				}
+			}
+
+			r.Response = sb.String()
+			c.JSON(http.StatusOK, r)
+			return
+		}
+
+		streamResponse(c, ch)
 	}
-
-	streamResponse(c, ch)
 }
 
 func (s *Server) EmbedHandler(c *gin.Context) {
@@ -848,6 +979,8 @@ func (s *Server) ShowHandler(c *gin.Context) {
 }
 
 func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
+	log.Printf("GetModelInfo req: %+v", req)
+
 	name := model.ParseName(req.Model)
 	if !name.IsValid() {
 		return nil, ErrModelPathInvalid
@@ -895,6 +1028,8 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		ModifiedAt:   manifest.fi.ModTime(),
 	}
 
+	log.Printf("resp: %+v", resp)
+
 	var params []string
 	cs := 30
 	for k, v := range m.Options {
@@ -908,6 +1043,8 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		}
 	}
 	resp.Parameters = strings.Join(params, "\n")
+
+	log.Printf("resp: %+v", resp)
 
 	if len(req.Options) > 0 {
 		if m.Options == nil {
@@ -925,30 +1062,39 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 	fmt.Fprint(&sb, m.String())
 	resp.Modelfile = sb.String()
 
-	kvData, tensors, err := getModelData(m.ModelPath, req.Verbose)
-	if err != nil {
-		return nil, err
-	}
-
-	delete(kvData, "general.name")
-	delete(kvData, "tokenizer.chat_template")
-	resp.ModelInfo = kvData
-
-	tensorData := make([]api.Tensor, len(tensors.Items()))
-	for cnt, t := range tensors.Items() {
-		tensorData[cnt] = api.Tensor{Name: t.Name, Type: t.Type(), Shape: t.Shape}
-	}
-	resp.Tensors = tensorData
-
-	if len(m.ProjectorPaths) > 0 {
-		projectorData, _, err := getModelData(m.ProjectorPaths[0], req.Verbose)
+	if m.ModelBackend == "OpenVINO" {
+		resp.ModelType = m.ModelType
+		resp.InferDevice = m.InferDevice
+		resp.ModelBackend = m.ModelBackend
+		log.Printf("resp: %+v", resp)
+		return resp, nil
+	} else {
+		kvData, tensors, err := getModelData(m.ModelPath, req.Verbose)
 		if err != nil {
 			return nil, err
 		}
-		resp.ProjectorInfo = projectorData
-	}
 
-	return resp, nil
+		delete(kvData, "general.name")
+		delete(kvData, "tokenizer.chat_template")
+		resp.ModelInfo = kvData
+
+		tensorData := make([]api.Tensor, len(tensors.Items()))
+		for cnt, t := range tensors.Items() {
+			tensorData[cnt] = api.Tensor{Name: t.Name, Type: t.Type(), Shape: t.Shape}
+		}
+		resp.Tensors = tensorData
+
+		if len(m.ProjectorPaths) > 0 {
+			projectorData, _, err := getModelData(m.ProjectorPaths[0], req.Verbose)
+			if err != nil {
+				return nil, err
+			}
+			resp.ProjectorInfo = projectorData
+		}
+
+		log.Printf("resp: %+v", resp)
+		return resp, nil
+	}
 }
 
 func getModelData(digest string, verbose bool) (ggml.KV, ggml.Tensors, error) {
@@ -956,7 +1102,7 @@ func getModelData(digest string, verbose bool) (ggml.KV, ggml.Tensors, error) {
 	if verbose {
 		maxArraySize = -1
 	}
-	data, err := llm.LoadModel(digest, maxArraySize)
+	data, err := llamaserver.LoadModel(digest, maxArraySize)
 	if err != nil {
 		return nil, ggml.Tensors{}, err
 	}
@@ -1636,12 +1782,12 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	go func() {
 		defer close(ch)
 
-		if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
+		if err := r.Completion(c.Request.Context(), llamaserver.CompletionRequest{
 			Prompt:  prompt,
 			Images:  images,
 			Format:  req.Format,
 			Options: opts,
-		}, func(r llm.CompletionResponse) {
+		}, func(r llamaserver.CompletionResponse) {
 			res := api.ChatResponse{
 				Model:     req.Model,
 				CreatedAt: time.Now().UTC(),

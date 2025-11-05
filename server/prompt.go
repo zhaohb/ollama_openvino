@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
-	"github.com/ollama/ollama/llm"
+	llamaserver "github.com/ollama/ollama/llm/llama"
 	"github.com/ollama/ollama/template"
 )
 
@@ -19,7 +19,7 @@ type tokenizeFunc func(context.Context, string) ([]int, error)
 // chatPrompt accepts a list of messages and returns the prompt and images that should be used for the next chat turn.
 // chatPrompt truncates any messages that exceed the context window of the model, making sure to always include 1) the
 // latest message and 2) system messages
-func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.Options, msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (prompt string, images []llm.ImageData, _ error) {
+func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.Options, msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (prompt string, images []llamaserver.ImageData, _ error) {
 	var system []api.Message
 
 	// TODO: Ideally we would compute this from the projector metadata but some pieces are implementation dependent
@@ -83,7 +83,7 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 		prompt := msg.Content
 
 		for _, i := range msg.Images {
-			imgData := llm.ImageData{
+			imgData := llamaserver.ImageData{
 				ID:   len(images),
 				Data: i,
 			}

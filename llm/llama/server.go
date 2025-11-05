@@ -32,6 +32,7 @@ import (
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llama"
+	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/model"
@@ -85,7 +86,7 @@ type llmServer struct {
 	port        int
 	cmd         *exec.Cmd
 	done        chan error // Channel to signal when the process exits
-	status      *StatusWriter
+	status      *llm.StatusWriter
 	options     api.Options
 	numParallel int
 	modelPath   string
@@ -113,7 +114,7 @@ type llamaServer struct {
 
 	ggml     *ggml.GGML
 	gpus     discover.GpuInfoList // The set of GPUs covered by the memory estimate
-	estimate MemoryEstimate
+	estimate llm.MemoryEstimate
 }
 
 type ollamaServer struct {
@@ -334,7 +335,7 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 		s := llmServer{
 			port:           port,
 			cmd:            exec.Command(exe, params...),
-			status:         NewStatusWriter(os.Stderr),
+			status:         llm.NewStatusWriter(os.Stderr),
 			options:        opts,
 			modelPath:      modelPath,
 			loadRequest:    loadRequest,
@@ -351,7 +352,7 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 		s.cmd.Env = os.Environ()
 		s.cmd.Stdout = os.Stdout
 		s.cmd.Stderr = s.status
-		s.cmd.SysProcAttr = LlamaServerSysProcAttr
+		s.cmd.SysProcAttr = llm.LlamaServerSysProcAttr
 
 		s.cmd.Env = append(s.cmd.Env, "OLLAMA_LIBRARY_PATH="+strings.Join(ggmlPaths, string(filepath.ListSeparator)))
 
@@ -487,17 +488,17 @@ func (s *llamaServer) Load(ctx context.Context, gpus discover.GpuInfoList, requi
 	systemSwapFreeMemory := systemInfo.System.FreeSwap
 	slog.Info("system memory", "total", format.HumanBytes2(systemTotalMemory), "free", format.HumanBytes2(systemFreeMemory), "free_swap", format.HumanBytes2(systemSwapFreeMemory))
 
-	g := pickBestFullFitByLibrary(s.ggml, s.modelPath, []string{s.loadRequest.ProjectorPath}, s.loadRequest.LoraPath, s.options, gpus, s.numParallel)
+	g := llm.PickBestFullFitByLibrary(s.ggml, s.modelPath, []string{s.loadRequest.ProjectorPath}, s.loadRequest.LoraPath, s.options, gpus, s.numParallel)
 	if g == nil {
 		if !requireFull {
-			g = pickBestPartialFitByLibrary(s.ggml, []string{s.loadRequest.ProjectorPath}, s.loadRequest.LoraPath, s.options, gpus, s.numParallel)
+			g = llm.PickBestPartialFitByLibrary(s.ggml, []string{s.loadRequest.ProjectorPath}, s.loadRequest.LoraPath, s.options, gpus, s.numParallel)
 		} else {
 			return ErrLoadRequiredFull
 		}
 	}
 
 	gpus = g
-	s.estimate = estimateGPULayers(gpus, s.ggml, []string{s.loadRequest.ProjectorPath}, s.options, s.numParallel)
+	s.estimate = llm.EstimateGPULayers(gpus, s.ggml, []string{s.loadRequest.ProjectorPath}, s.options, s.numParallel)
 
 	if len(gpus) > 1 || gpus[0].Library != "cpu" {
 		switch {
@@ -590,7 +591,7 @@ func (s *llamaServer) Load(ctx context.Context, gpus discover.GpuInfoList, requi
 
 // createGPULayers maps from the tensor splits assigned by the memory estimates to explicit assignment
 // of particular layers onto GPUs
-func createGPULayers(estimate MemoryEstimate, ggml *ggml.GGML, gpus discover.GpuInfoList, numGPU int) ml.GPULayersList {
+func createGPULayers(estimate llm.MemoryEstimate, ggml *ggml.GGML, gpus discover.GpuInfoList, numGPU int) ml.GPULayersList {
 	if numGPU <= 0 {
 		return nil
 	}

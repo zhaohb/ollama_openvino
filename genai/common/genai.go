@@ -62,7 +62,7 @@ import (
 	"strconv"
 	"unsafe"
 
-	"github.com/ollama/ollama/llm"
+	llamaserver "github.com/ollama/ollama/llm/llama"
 )
 
 type SamplingParams struct {
@@ -460,7 +460,7 @@ func createTensorFromImageData(imageData []byte) (*C.ov_tensor_t, error) {
 	return tensor, nil
 }
 
-func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string, images []llm.ImageData, samplingparameters *SamplingParams, seq *Sequence) string {
+func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string, images []llamaserver.ImageData, samplingparameters *SamplingParams, seq *Sequence) string {
 	cInput := C.CString(input)
 	defer C.free(unsafe.Pointer(cInput))
 
@@ -511,7 +511,7 @@ func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string,
 	return C.GoString((*C.char)(cOutput))
 }
 
-func VlmGenerateText(pipeline *C.ov_genai_vlm_pipeline, input string, images []llm.ImageData, samplingparameters *SamplingParams) string {
+func VlmGenerateText(pipeline *C.ov_genai_vlm_pipeline, input string, images []llamaserver.ImageData, samplingparameters *SamplingParams) string {
 	cInput := C.CString(input)
 	defer C.free(unsafe.Pointer(cInput))
 

@@ -37,6 +37,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
+	"github.com/ollama/ollama/genai"
 	"github.com/ollama/ollama/parser"
 	"github.com/ollama/ollama/progress"
 	"github.com/ollama/ollama/readline"
@@ -281,8 +282,11 @@ func loadOrUnloadModel(cmd *cobra.Command, opts *runOptions) error {
 	}
 
 	req := &api.GenerateRequest{
-		Model:     opts.Model,
-		KeepAlive: opts.KeepAlive,
+		Model:        opts.Model,
+		KeepAlive:    opts.KeepAlive,
+		ModelBackend: opts.ModelBackend,
+		ModelType:    opts.ModelType,
+		InferDevice:  opts.InferDevice,
 
 		// pass Think here so we fail before getting to the chat prompt if the model doesn't support it
 		Think: opts.Think,
@@ -313,6 +317,8 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 		WordWrap: os.Getenv("TERM") == "xterm-256color",
 		Options:  map[string]any{},
 	}
+
+	log.Printf("Initial opts: %+v", opts)
 
 	format, err := cmd.Flags().GetString("format")
 	if err != nil {
@@ -432,6 +438,11 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 	}
 
 	opts.ParentModel = info.Details.ParentModel
+	opts.ModelType = info.ModelType
+	opts.InferDevice = info.InferDevice
+	opts.ModelBackend = info.ModelBackend
+
+	log.Printf("Initial opts: %+v", opts)
 
 	if interactive {
 		if err := loadOrUnloadModel(cmd, &opts); err != nil {
@@ -452,6 +463,10 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 
 		return generateInteractive(cmd, opts)
 	}
+	log.Printf("opts.ModelType %s", opts.ModelType)
+	log.Printf("opts.ModelBackend %s", opts.ModelBackend)
+	log.Printf("opts.InferDevice %s", opts.InferDevice)
+	log.Printf("opts.Model %s", opts.Model)
 	return generate(cmd, opts)
 }
 
@@ -991,6 +1006,9 @@ type runOptions struct {
 	KeepAlive    *api.Duration
 	Think        *api.ThinkValue
 	HideThinking bool
+	ModelType    string
+	InferDevice  string
+	ModelBackend string
 }
 
 type displayResponseState struct {
@@ -1282,15 +1300,18 @@ func generate(cmd *cobra.Command, opts runOptions) error {
 	}
 
 	request := api.GenerateRequest{
-		Model:     opts.Model,
-		Prompt:    opts.Prompt,
-		Context:   generateContext,
-		Images:    opts.Images,
-		Format:    json.RawMessage(opts.Format),
-		System:    opts.System,
-		Options:   opts.Options,
-		KeepAlive: opts.KeepAlive,
-		Think:     opts.Think,
+		Model:        opts.Model,
+		ModelType:    opts.ModelType,
+		InferDevice:  opts.InferDevice,
+		ModelBackend: opts.ModelBackend,
+		Prompt:       opts.Prompt,
+		Context:      generateContext,
+		Images:       opts.Images,
+		Format:       json.RawMessage(opts.Format),
+		System:       opts.System,
+		Options:      opts.Options,
+		KeepAlive:    opts.KeepAlive,
+		Think:        opts.Think,
 	}
 
 	if err := client.Generate(ctx, &request, fn); err != nil {
@@ -1576,6 +1597,19 @@ func NewCLI() *cobra.Command {
 		RunE:    DeleteHandler,
 	}
 
+	genairunnerCmd := &cobra.Command{
+		Use:    "genairunner",
+		Short:  "OpenVINO Inference",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return genai.Execute(os.Args[1:])
+		},
+		FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
+	}
+	genairunnerCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		_ = genai.Execute(args[1:])
+	})
+
 	runnerCmd := &cobra.Command{
 		Use:    "runner",
 		Hidden: true,
@@ -1645,6 +1679,7 @@ func NewCLI() *cobra.Command {
 		copyCmd,
 		deleteCmd,
 		runnerCmd,
+		genairunnerCmd,
 	)
 
 	return rootCmd

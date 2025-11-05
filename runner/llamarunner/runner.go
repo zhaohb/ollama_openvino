@@ -23,7 +23,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/llama"
-	"github.com/ollama/ollama/llm"
+	llamaserver "github.com/ollama/ollama/llm/llama"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/runner/common"
 )
@@ -79,7 +79,7 @@ type Sequence struct {
 	// true if an embedding are to be returned instead of text generation
 	embeddingOnly bool
 
-	doneReason llm.DoneReason
+	doneReason llamaserver.DoneReason
 
 	// Metrics
 	startProcessingTime time.Time
@@ -96,7 +96,7 @@ type NewSequenceParams struct {
 	embedding      bool
 }
 
-func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSequenceParams) (*Sequence, error) {
+func (s *Server) NewSequence(prompt string, images []llamaserver.ImageData, params NewSequenceParams) (*Sequence, error) {
 	s.ready.Wait()
 
 	startTime := time.Now()
@@ -160,7 +160,7 @@ func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSe
 // inputs processes the prompt and images into a list of inputs
 // by splitting the prompt on [img-<n>] tags, tokenizing text and
 // generating image embeddings for each image
-func (s *Server) inputs(prompt string, images []llm.ImageData) ([]input, error) {
+func (s *Server) inputs(prompt string, images []llamaserver.ImageData) ([]input, error) {
 	var inputs []input
 	var parts []string
 	var matches [][]string
@@ -232,7 +232,7 @@ type Server struct {
 	image *ImageContext
 
 	// status for external health reporting - loading, ready to serve, etc.
-	status llm.ServerStatus
+	status llamaserver.ServerStatus
 
 	// current progress on loading the model
 	progress float32
@@ -303,7 +303,7 @@ func flushPending(seq *Sequence) bool {
 	}
 }
 
-func (s *Server) removeSequence(seqIndex int, reason llm.DoneReason) {
+func (s *Server) removeSequence(seqIndex int, reason llamaserver.DoneReason) {
 	seq := s.seqs[seqIndex]
 
 	flushPending(seq)
@@ -381,7 +381,7 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 
 		// if past the num predict limit
 		if seq.numPredict > 0 && seq.numPredicted >= seq.numPredict {
-			s.removeSequence(seqIdx, llm.DoneReasonLength)
+			s.removeSequence(seqIdx, llamaserver.DoneReasonLength)
 			continue
 		}
 
@@ -472,7 +472,7 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 			}
 
 			seq.embedding <- embed
-			s.removeSequence(i, llm.DoneReasonStop)
+			s.removeSequence(i, llamaserver.DoneReasonStop)
 			continue
 		}
 
@@ -489,7 +489,7 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 			// as it's important for the /api/generate context
 			// seq.responses <- piece
 
-			s.removeSequence(i, llm.DoneReasonStop)
+			s.removeSequence(i, llamaserver.DoneReasonStop)
 			continue
 		}
 
@@ -520,7 +520,7 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 			}
 			seq.cache.Inputs = seq.cache.Inputs[:tokenLen]
 
-			s.removeSequence(i, llm.DoneReasonStop)
+			s.removeSequence(i, llamaserver.DoneReasonStop)
 			continue
 		}
 
@@ -533,7 +533,7 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 		}
 
 		if !flushPending(seq) {
-			s.removeSequence(i, llm.DoneReasonConnectionClosed)
+			s.removeSequence(i, llamaserver.DoneReasonConnectionClosed)
 		}
 	}
 
@@ -541,7 +541,7 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 }
 
 func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
-	var req llm.CompletionRequest
+	var req llamaserver.CompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
@@ -632,7 +632,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 			return
 		case content, ok := <-seq.responses:
 			if ok {
-				if err := json.NewEncoder(w).Encode(&llm.CompletionResponse{
+				if err := json.NewEncoder(w).Encode(&llamaserver.CompletionResponse{
 					Content: content,
 				}); err != nil {
 					http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
@@ -642,7 +642,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 
 				flusher.Flush()
 			} else {
-				if err := json.NewEncoder(w).Encode(&llm.CompletionResponse{
+				if err := json.NewEncoder(w).Encode(&llamaserver.CompletionResponse{
 					Done:               true,
 					DoneReason:         seq.doneReason,
 					PromptEvalCount:    seq.numPromptInputs,
@@ -660,7 +660,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
-	var req llm.EmbeddingRequest
+	var req llamaserver.EmbeddingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("bad request: %s", err), http.StatusBadRequest)
 		return
@@ -711,7 +711,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 
 	embedding := <-seq.embedding
 
-	if err := json.NewEncoder(w).Encode(&llm.EmbeddingResponse{
+	if err := json.NewEncoder(w).Encode(&llamaserver.EmbeddingResponse{
 		Embedding: embedding,
 	}); err != nil {
 		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
@@ -720,7 +720,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(&llm.ServerStatusResponse{
+	if err := json.NewEncoder(w).Encode(&llamaserver.ServerStatusResponse{
 		Status:   s.status,
 		Progress: s.progress,
 	}); err != nil {
@@ -773,7 +773,7 @@ func (s *Server) loadModel(
 		panic(err)
 	}
 
-	s.status = llm.ServerStatusReady
+	s.status = llamaserver.ServerStatusReady
 	s.ready.Done()
 }
 
@@ -785,12 +785,12 @@ func (s *Server) load(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if s.status != llm.ServerStatusLaunched {
+	if s.status != llamaserver.ServerStatusLaunched {
 		http.Error(w, "model already loaded", http.StatusInternalServerError)
 		return
 	}
 
-	var req llm.LoadRequest
+	var req llamaserver.LoadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -801,7 +801,7 @@ func (s *Server) load(w http.ResponseWriter, r *http.Request) {
 	switch req.Operation {
 	// LoadOperationFit and LoadOperationAlloc have no meaning here - just return a successful response
 
-	case llm.LoadOperationCommit:
+	case llamaserver.LoadOperationCommit:
 		s.batchSize = req.BatchSize
 		s.parallel = req.Parallel
 		s.seqs = make([]*Sequence, s.parallel)
@@ -829,18 +829,18 @@ func (s *Server) load(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		s.status = llm.ServerStatusLoadingModel
+		s.status = llamaserver.ServerStatusLoadingModel
 		go s.loadModel(params, s.modelPath, req.LoraPath, req.ProjectorPath, req.KvSize, req.KvCacheType, req.FlashAttention, req.NumThreads, req.MultiUserCache)
 
-	case llm.LoadOperationClose:
+	case llamaserver.LoadOperationClose:
 		// No-op for us
-		if err := json.NewEncoder(w).Encode(&llm.LoadResponse{}); err != nil {
+		if err := json.NewEncoder(w).Encode(&llamaserver.LoadResponse{}); err != nil {
 			http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
 		}
 		return
 	}
 
-	resp := llm.LoadResponse{Success: true}
+	resp := llamaserver.LoadResponse{Success: true}
 	if err := json.NewEncoder(w).Encode(&resp); err != nil {
 		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
 		return
@@ -867,7 +867,7 @@ func Execute(args []string) error {
 
 	server := &Server{
 		modelPath: *mpath,
-		status:    llm.ServerStatusLaunched,
+		status:    llamaserver.ServerStatusLaunched,
 	}
 
 	server.ready.Add(1)

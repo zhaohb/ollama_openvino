@@ -64,6 +64,9 @@ type Model struct {
 	Digest         string
 	Options        map[string]any
 	Messages       []api.Message
+	ModelBackend   string
+	ModelType      string
+	InferDevice    string
 
 	Template *template.Template
 }
@@ -71,23 +74,35 @@ type Model struct {
 // Capabilities returns the capabilities that the model supports
 func (m *Model) Capabilities() []model.Capability {
 	capabilities := []model.Capability{}
+	// log.Printf("Model: %+v", m)
 
-	// Check for completion capability
-	f, err := gguf.Open(m.ModelPath)
-	if err == nil {
-		defer f.Close()
-
-		if f.KeyValue("pooling_type").Valid() {
-			capabilities = append(capabilities, model.CapabilityEmbedding)
+	// Skip GGUF parsing for OpenVINO models
+	if m.ModelBackend == "OpenVINO" {
+		// For OpenVINO models, determine capabilities based on ModelType
+		if m.ModelType == "VLM" {
+			capabilities = append(capabilities, model.CapabilityCompletion, model.CapabilityVision)
 		} else {
-			// If no embedding is specified, we assume the model supports completion
+			// Default to completion for LLM models
 			capabilities = append(capabilities, model.CapabilityCompletion)
 		}
-		if f.KeyValue("vision.block_count").Valid() {
-			capabilities = append(capabilities, model.CapabilityVision)
-		}
 	} else {
-		slog.Error("couldn't open model file", "error", err)
+		// Check for completion capability in GGUF models
+		f, err := gguf.Open(m.ModelPath)
+		if err == nil {
+			defer f.Close()
+
+			if f.KeyValue("pooling_type").Valid() {
+				capabilities = append(capabilities, model.CapabilityEmbedding)
+			} else {
+				// If no embedding is specified, we assume the model supports completion
+				capabilities = append(capabilities, model.CapabilityCompletion)
+			}
+			if f.KeyValue("vision.block_count").Valid() {
+				capabilities = append(capabilities, model.CapabilityVision)
+			}
+		} else {
+			slog.Error("couldn't open model file", "error", err)
+		}
 	}
 
 	if m.Template == nil {
@@ -116,6 +131,7 @@ func (m *Model) Capabilities() []model.Capability {
 		capabilities = append(capabilities, model.CapabilityThinking)
 	}
 
+	// log.Printf("capabilities: %+v", capabilities)
 	return capabilities
 }
 
@@ -313,6 +329,24 @@ func GetModel(name string) (*Model, error) {
 		case "application/vnd.ollama.image.model":
 			model.ModelPath = filename
 			model.ParentModel = layer.From
+		case "application/vnd.ollama.image.modeltype":
+			bts, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, err
+			}
+			model.ModelType = string(bts)
+		case "application/vnd.ollama.image.inferdevice":
+			bts, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, err
+			}
+			model.InferDevice = string(bts)
+		case "application/vnd.ollama.image.modelbackend":
+			bts, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, err
+			}
+			model.ModelBackend = string(bts)
 		case "application/vnd.ollama.image.embed":
 			// Deprecated in versions  > 0.1.2
 			// TODO: remove this warning in a future version
