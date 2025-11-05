@@ -6,11 +6,12 @@ import (
 )
 
 func Execute(args []string) error {
-	if args[0] == "runner" {
-		args = args[1:]
-	}
+	// if args[0] == "runner" {
+	// 	args = args[1:]
+	// }
+	args = args[1:]
 
-	var newRunner bool
+	var vlmRunner bool
 	if args[0] == "--genai-vlm-engine" {
 		args = args[1:]
 		vlmRunner = true
