@@ -721,50 +721,58 @@ Let's take [deepseek-ai/DeepSeek-R1-Distill-Qwen-7B](https://hf-mirror.com/deeps
 
 5. Create the model in Ollama
 
-    1. LLM
-      a. create Modelfile
-          ```shell
-          cat Modelfile
-          ```
-          ```shell
-            FROM  Qwen3-4B-int4-asym-ov.tar.gz
-            ModelBackend "OpenVINO"
-            ModelType "LLM"
-            InferDevice "GPU"
-            PARAMETER repeat_penalty 1.0
-            PARAMETER top_p 1.0
-            PARAMETER temperature 1.0
-          ```
-      b. Create an Ollama model from a Modelfile.
-          ```shell
-          ollama create Qwen3-4B-int4-asym-ov:v1 -f Modelfile
-          ```
+   1. LLM Model
+      a. Create Modelfile
+         ```shell
+         cat Modelfile
+         ```
+         ```plaintext
+         FROM Qwen3-4B-int4-asym-ov.tar.gz
+         ModelBackend "OpenVINO"
+         ModelType "LLM"
+         InferDevice "GPU"
+         PARAMETER repeat_penalty 1.0
+         PARAMETER top_p 1.0
+         PARAMETER temperature 1.0
+         ```
+      b. Create an Ollama model from the Modelfile
+         ```shell
+         ollama create Qwen3-4B-int4-asym-ov:v1 -f Modelfile
+         ```
       c. Run the model
          ```shell
-          ollama run Qwen3-4B-int4-asym-ov:v1
-          ```
-    2. VLM
-      a. create Modelfile
-          ```shell
-          cat Modelfile
-          ```
-          ```shell
-            FROM  Qwen2.5-VL-3B-Instruct.tar.gz
-            ModelBackend "OpenVINO"
-            ModelType "VLM"
-            InferDevice "GPU"
-            PARAMETER repeat_penalty 1.0
-            PARAMETER top_p 1.0
-            PARAMETER temperature 1.0
-          ```
-      b. Create an Ollama model from a Modelfile.
-          ```shell
-          ollama create Qwen2.5-VL-3B-Instruct:v1 -f Modelfile
-          ```
+         ollama run Qwen3-4B-int4-asym-ov:v1
+         ```
+
+   2. VLM Model
+      a. Create Modelfile
+         ```shell
+         cat Modelfile
+         ```
+         ```plaintext
+         FROM Qwen2.5-VL-3B-Instruct.tar.gz
+         ModelBackend "OpenVINO"
+         ModelType "VLM"
+         InferDevice "GPU"
+         PARAMETER repeat_penalty 1.0
+         PARAMETER top_p 1.0
+         PARAMETER temperature 1.0
+         ```
+      b. Create an Ollama model from the Modelfile
+         ```shell
+         ollama create Qwen2.5-VL-3B-Instruct:v1 -f Modelfile
+         ```
       c. Run the model
          ```shell
-          ollama run Qwen2.5-VL-3B-Instruct:v1
-         ```               
+         ollama run Qwen2.5-VL-3B-Instruct:v1
+         ```
+         Example interaction with VLM:**
+         ```shell
+         >>> What's in this image? C:\path\to\cat.jpg
+         Added image 'C:\path\to\cat.jpg'
+         The image shows a close-up of a cat with striking green eyes and tabby markings on its fur...
+         ```
+           
 
 
 
@@ -959,4 +967,5 @@ Then build and run Ollama from the root directory of the repository:
 ## Future Development Plan
 Here are some features and improvements planned for future releases:
    
-1. **Multimodal models**: Support for multimodal models that can process both text and image data.
+1. **Multimodal models**: Support for multimodal models that can process both text and image data.  ✅ **DONE**
+2. **Embedding models**: Support for embedding models that can generate embeddings from text or images. 
