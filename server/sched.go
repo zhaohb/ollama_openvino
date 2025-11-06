@@ -307,7 +307,7 @@ func (s *Scheduler) processCompleted(ctx context.Context) {
 			return
 		case finished := <-s.finishedReqCh:
 			s.loadedMu.Lock()
-			runner := s.loaded[finished.model.ModelPath]
+			runner := s.loaded[finished.model.ShortName]
 			s.loadedMu.Unlock()
 			if runner == nil {
 				slog.Error("finished request signal received after model unloaded", "modelPath", finished.model.ModelPath)
@@ -448,7 +448,13 @@ func (s *Scheduler) load(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoLis
 	s.loadedMu.Lock()
 	llama := s.activeLoading
 
-	if req.modelbackend != "OpenVINO" {
+	log.Printf("req.model.ModelBackend: %s", req.model.ModelBackend)
+	log.Printf("req.model.ModelPath: %s", req.model.ModelPath)
+	log.Printf("req.model.ShortName: %s", req.model.ShortName)
+	log.Printf("req.model.ModelType: %s", req.model.ModelType)
+	log.Printf("req.model.InferDevice: %s", req.model.InferDevice)
+
+	if req.model.ModelBackend != "OpenVINO" {
 		if llama == nil {
 			var err error
 			llama, err = s.newServerFn(gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
@@ -548,6 +554,14 @@ func (s *Scheduler) load(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoLis
 			req.errCh <- err
 			return false
 		}
+		s.loadedMu.Unlock()
+
+		err = genai.Load(req.ctx, gpus, requireFull, req.model.ModelPath, req.model.ShortName, req.model.ModelType, req.model.InferDevice)
+		if err != nil {
+			slog.Error("error loading genai server", "error", err)
+			req.errCh <- err
+			return false
+		}
 
 		runner := &runnerRef{
 			model:           req.model,
@@ -558,8 +572,8 @@ func (s *Scheduler) load(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoLis
 			gpus:            gpus,
 			// estimatedVRAM:   llama.EstimatedVRAM(),
 			// estimatedTotal:  llama.EstimatedTotal(),
-			loading:  true,
-			refCount: 1,
+			loading: true,
+			pid:     genai.Pid(),
 		}
 		runner.numParallel = numParallel
 		runner.refMu.Lock()
@@ -570,16 +584,20 @@ func (s *Scheduler) load(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoLis
 		s.loadedMu.Unlock()
 
 		go func() {
+
 			defer runner.refMu.Unlock()
 			if err = genai.WaitUntilRunning(req.ctx); err != nil {
-				slog.Error("error loading llama server", "error", err)
-				runner.refCount--
+				slog.Error("error loading genai server", "error", err)
 				req.errCh <- err
-				slog.Debug("triggering expiration for failed load", "model", runner.modelPath)
+				slog.Debug("triggering expiration for failed load", "runner", runner)
 				s.expiredCh <- runner
 				return
 			}
-			slog.Debug("finished setting up runner", "model", req.model.ShortName)
+			slog.Debug("finished setting up", "runner", runner)
+			if runner.pid < 0 {
+				runner.pid = genai.Pid()
+			}
+			runner.refCount++
 			runner.loading = false
 			go func() {
 				<-req.ctx.Done()

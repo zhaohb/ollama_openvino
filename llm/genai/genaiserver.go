@@ -36,13 +36,16 @@ import (
 )
 
 type GenaiServer interface {
+	ModelPath() string
 	Ping(ctx context.Context) error
+	Load(ctx context.Context, gpus discover.GpuInfoList, requireFull bool, modelpath string, shortname string, modeltype string, inferdevice string) error
 	WaitUntilRunning(ctx context.Context) error
 	Completion(ctx context.Context, req llamaserver.CompletionRequest, fn func(llamaserver.CompletionResponse)) error
 	Close() error
 	EstimatedVRAM() uint64 // Total VRAM across all GPUs
 	EstimatedTotal() uint64
 	EstimatedVRAMByGPU(gpuID string) uint64
+	Pid() int
 }
 
 // GenaillmServer is an instance of the llama.cpp server
@@ -297,6 +300,100 @@ func NewGenaiServer(gpus discover.GpuInfoList, model string, modelname string, m
 	}
 }
 
+type LoadRequest struct {
+	ModelPath   string `json:"model_path"`
+	ShortName   string `json:"short_name"`
+	ModelType   string `json:"model_type"`
+	InferDevice string `json:"infer_device"`
+}
+
+type LoadResponse struct {
+	Success bool `json:"success"`
+}
+
+func (s *GenaillmServer) waitUntilRunnerLaunched(ctx context.Context) error {
+	for {
+		_, err := s.getServerStatus(ctx)
+		if err == nil {
+			break
+		}
+
+		t := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-t.C:
+			continue
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return nil
+}
+
+func (s *GenaillmServer) Load(ctx context.Context, gpus discover.GpuInfoList, requireFull bool, modelpath string, shortname string, modeltype string, inferdevice string) error {
+	// Wait for the runner to start listening before sending load request
+	log.Printf("waiting for genai runner to start listening")
+
+	if err := s.waitUntilRunnerLaunched(ctx); err != nil {
+		return err
+	}
+	resp, err := s.initModel(ctx, modelpath, shortname, modeltype, inferdevice)
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return errors.New("failed to load model")
+	}
+
+	log.Printf("genai runner is ready to accept load request")
+	return nil
+}
+
+func (s *GenaillmServer) initModel(ctx context.Context, modelpath string, shortname string, modeltype string, inferdevice string) (*LoadResponse, error) {
+	// Create request with all parameters
+	req := LoadRequest{
+		ModelPath:   modelpath,
+		ShortName:   shortname,
+		ModelType:   modeltype,
+		InferDevice: inferdevice,
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling load data: %w", err)
+	}
+
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/load", s.port), bytes.NewBuffer(data))
+	if err != nil {
+		return nil, fmt.Errorf("error creating load request: %w", err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return nil, fmt.Errorf("do load request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read load request: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		log.Printf("llm load error: %s", body)
+		return nil, fmt.Errorf("%s", body)
+	}
+
+	var llmResp LoadResponse
+	if err := json.Unmarshal(body, &llmResp); err != nil {
+		return nil, fmt.Errorf("load unmarshal encode response: %w", err)
+	}
+
+	return &llmResp, nil
+}
+
 func (s *GenaillmServer) getServerStatus(ctx context.Context) (llamaserver.ServerStatus, error) {
 	// Fail fast if its exited
 	if s.cmd.ProcessState != nil {
@@ -440,6 +537,17 @@ func (s *GenaillmServer) WaitUntilRunning(ctx context.Context) error {
 			continue
 		}
 	}
+}
+
+func (s *GenaillmServer) Pid() int {
+	if s.cmd != nil && s.cmd.Process != nil {
+		return s.cmd.Process.Pid
+	}
+	return -1
+}
+
+func (s *GenaillmServer) ModelPath() string {
+	return s.modelPath
 }
 
 var grammarJSON = `
