@@ -33,6 +33,7 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
+	"github.com/ollama/ollama/genai/common"
 	genaiserver "github.com/ollama/ollama/llm/genai"
 	llamaserver "github.com/ollama/ollama/llm/llama"
 	"github.com/ollama/ollama/logutil"
@@ -1553,6 +1554,19 @@ func Serve(ln net.Listener) error {
 	if totalVRAM < lowVRAMThreshold {
 		s.lowVRAM = true
 		slog.Info("entering low vram mode", "total vram", format.HumanBytes2(totalVRAM), "threshold", format.HumanBytes2(lowVRAMThreshold))
+	}
+
+	genai_device := common.GetGenaiAvailableDevices()
+
+	if len(genai_device) == 0 {
+		log.Printf("No devices available for GenAI")
+		return nil
+	}
+	for i := 0; i < int(len(genai_device)); i++ {
+		slog.Info("GenAI inference device",
+			"Device", genai_device[i]["device_name"],
+			"Build Number", genai_device[i]["buildNumber"],
+			"description", genai_device[i]["description"])
 	}
 
 	err = srvr.Serve(ln)
