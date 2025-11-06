@@ -508,6 +508,16 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			return
 		}
 		prompt := req.Prompt
+
+		// Convert api.ImageData ([]byte) to llamaserver.ImageData (struct)
+		var llamaImages []llamaserver.ImageData
+		for i, imgData := range req.Images {
+			llamaImages = append(llamaImages, llamaserver.ImageData{
+				Data: imgData,
+				ID:   i,
+			})
+		}
+
 		ch := make(chan any)
 
 		go func() {
@@ -516,7 +526,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			defer close(ch)
 			if err := r.Completion(c.Request.Context(), llamaserver.CompletionRequest{
 				Prompt:  prompt,
-				Images:  nil,
+				Images:  llamaImages,
 				Format:  req.Format,
 				Options: opts,
 			}, func(cr llamaserver.CompletionResponse) {

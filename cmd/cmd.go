@@ -1288,6 +1288,8 @@ func generate(cmd *cobra.Command, opts runOptions) error {
 		return nil
 	}
 
+	log.Printf("opts.MultiModal: %v", opts.MultiModal)
+
 	if opts.MultiModal {
 		opts.Prompt, opts.Images, err = extractFileData(opts.Prompt)
 		if err != nil {
