@@ -1713,211 +1713,327 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 	name, err := getExistingName(name)
+	model, err := GetModel(name.String())
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
 		return
 	}
 
-	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
-	if errors.Is(err, errCapabilityCompletion) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
-		return
-	} else if err != nil {
-		handleScheduleError(c, req.Model, err)
-		return
-	}
-
-	checkpointLoaded := time.Now()
-
-	if len(req.Messages) == 0 {
-		c.JSON(http.StatusOK, api.ChatResponse{
-			Model:      req.Model,
-			CreatedAt:  time.Now().UTC(),
-			Message:    api.Message{Role: "assistant"},
-			Done:       true,
-			DoneReason: "load",
-		})
-		return
-	}
-
-	msgs := append(m.Messages, req.Messages...)
-	if req.Messages[0].Role != "system" && m.System != "" {
-		msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
-	}
-	msgs = filterThinkTags(msgs, m)
-
-	prompt, images, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, req.Tools, req.Think)
-	if err != nil {
-		slog.Error("chat prompt error", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	useHarmony := shouldUseHarmony(*m)
-
-	// Validate Think value: string values currently only allowed for gptoss models
-	if req.Think != nil && req.Think.IsString() && !useHarmony {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("think value %q is not supported for this model", req.Think.String())})
-		return
-	}
-
-	var harmonyMessageHandler *HarmonyMessageHandler
-	var harmonyToolParser *HarmonyToolCallAccumulator
-
-	if useHarmony {
-		harmonyMessageHandler = NewHarmonyMessageHandler()
-		var lastMessage *api.Message
-		if len(msgs) > 0 {
-			lastMessage = &msgs[len(msgs)-1]
+	if model.ModelBackend != "OpenVINO" {
+		r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
+			return
+		} else if err != nil {
+			handleScheduleError(c, req.Model, err)
+			return
 		}
-		harmonyMessageHandler.harmonyParser.AddImplicitStartOrPrefill(lastMessage)
-		harmonyToolParser = harmonyMessageHandler.CreateToolParser()
-	}
 
-	var thinkingState *thinking.Parser
-	openingTag, closingTag := thinking.InferTags(m.Template.Template)
-	if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
-		thinkingState = &thinking.Parser{
-			OpeningTag: openingTag,
-			ClosingTag: closingTag,
+		checkpointLoaded := time.Now()
+
+		if len(req.Messages) == 0 {
+			c.JSON(http.StatusOK, api.ChatResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Message:    api.Message{Role: "assistant"},
+				Done:       true,
+				DoneReason: "load",
+			})
+			return
 		}
-	}
 
-	var toolParser *tools.Parser
-	if len(req.Tools) > 0 && !useHarmony {
-		toolParser = tools.NewParser(m.Template.Template, req.Tools)
-	}
+		msgs := append(m.Messages, req.Messages...)
+		if req.Messages[0].Role != "system" && m.System != "" {
+			msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
+		}
+		msgs = filterThinkTags(msgs, m)
 
-	ch := make(chan any)
-	go func() {
-		defer close(ch)
+		prompt, images, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, req.Tools, req.Think)
+		if err != nil {
+			slog.Error("chat prompt error", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 
-		if err := r.Completion(c.Request.Context(), llamaserver.CompletionRequest{
-			Prompt:  prompt,
-			Images:  images,
-			Format:  req.Format,
-			Options: opts,
-		}, func(r llamaserver.CompletionResponse) {
-			res := api.ChatResponse{
-				Model:     req.Model,
-				CreatedAt: time.Now().UTC(),
-				Message:   api.Message{Role: "assistant", Content: r.Content},
-				Done:      r.Done,
-				Metrics: api.Metrics{
-					PromptEvalCount:    r.PromptEvalCount,
-					PromptEvalDuration: r.PromptEvalDuration,
-					EvalCount:          r.EvalCount,
-					EvalDuration:       r.EvalDuration,
-				},
+		useHarmony := shouldUseHarmony(*m)
+
+		// Validate Think value: string values currently only allowed for gptoss models
+		if req.Think != nil && req.Think.IsString() && !useHarmony {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("think value %q is not supported for this model", req.Think.String())})
+			return
+		}
+
+		var harmonyMessageHandler *HarmonyMessageHandler
+		var harmonyToolParser *HarmonyToolCallAccumulator
+
+		if useHarmony {
+			harmonyMessageHandler = NewHarmonyMessageHandler()
+			var lastMessage *api.Message
+			if len(msgs) > 0 {
+				lastMessage = &msgs[len(msgs)-1]
 			}
-			if r.Done {
-				res.DoneReason = r.DoneReason.String()
-				res.TotalDuration = time.Since(checkpointStart)
-				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+			harmonyMessageHandler.harmonyParser.AddImplicitStartOrPrefill(lastMessage)
+			harmonyToolParser = harmonyMessageHandler.CreateToolParser()
+		}
+
+		var thinkingState *thinking.Parser
+		openingTag, closingTag := thinking.InferTags(m.Template.Template)
+		if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
+			thinkingState = &thinking.Parser{
+				OpeningTag: openingTag,
+				ClosingTag: closingTag,
 			}
+		}
 
-			if useHarmony {
-				content, thinking, toolContent := harmonyMessageHandler.AddContent(r.Content, harmonyToolParser)
-				res.Message.Content = content
-				res.Message.Thinking = thinking
-				harmonyToolParser.Add(toolContent)
+		var toolParser *tools.Parser
+		if len(req.Tools) > 0 && !useHarmony {
+			toolParser = tools.NewParser(m.Template.Template, req.Tools)
+		}
 
+		ch := make(chan any)
+		go func() {
+			defer close(ch)
+
+			if err := r.Completion(c.Request.Context(), llamaserver.CompletionRequest{
+				Prompt:  prompt,
+				Images:  images,
+				Format:  req.Format,
+				Options: opts,
+			}, func(r llamaserver.CompletionResponse) {
+				res := api.ChatResponse{
+					Model:     req.Model,
+					CreatedAt: time.Now().UTC(),
+					Message:   api.Message{Role: "assistant", Content: r.Content},
+					Done:      r.Done,
+					Metrics: api.Metrics{
+						PromptEvalCount:    r.PromptEvalCount,
+						PromptEvalDuration: r.PromptEvalDuration,
+						EvalCount:          r.EvalCount,
+						EvalDuration:       r.EvalDuration,
+					},
+				}
 				if r.Done {
-					toolName, toolContent := harmonyToolParser.Drain()
-					if toolName != nil {
-						*toolName = strings.TrimPrefix(*toolName, "functions.")
-						var args api.ToolCallFunctionArguments
-						if err := json.Unmarshal([]byte(toolContent), &args); err != nil {
-							errStr := fmt.Sprintf("error parsing tool call: raw='%s', err=%s", toolContent, err.Error())
-							ch <- gin.H{"error": errStr}
-							return
-						}
-						res.Message.ToolCalls = []api.ToolCall{{Function: api.ToolCallFunction{Name: *toolName, Arguments: args}}}
-					}
+					res.DoneReason = r.DoneReason.String()
+					res.TotalDuration = time.Since(checkpointStart)
+					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 				}
 
-				// only send messages with meaningful content (empty messages confuse clients)
-				if res.Message.Content != "" || res.Message.Thinking != "" || len(res.Message.ToolCalls) > 0 || res.Done {
-					ch <- res
-				}
-
-				return
-			}
-
-			if thinkingState != nil {
-				thinkingContent, remainingContent := thinkingState.AddContent(res.Message.Content)
-				if thinkingContent == "" && remainingContent == "" && !r.Done {
-					// need to accumulate more to decide what to send
-					return
-				}
-				res.Message.Content = remainingContent
-				res.Message.Thinking = thinkingContent
-			}
-
-			if len(req.Tools) > 0 {
-				toolCalls, content := toolParser.Add(res.Message.Content)
-				if len(content) > 0 {
+				if useHarmony {
+					content, thinking, toolContent := harmonyMessageHandler.AddContent(r.Content, harmonyToolParser)
 					res.Message.Content = content
-				} else if len(toolCalls) > 0 {
-					res.Message.ToolCalls = toolCalls
-					res.Message.Content = ""
-				} else if res.Message.Thinking != "" {
-					// don't return
-				} else {
+					res.Message.Thinking = thinking
+					harmonyToolParser.Add(toolContent)
+
 					if r.Done {
-						res.Message.Content = toolParser.Content()
+						toolName, toolContent := harmonyToolParser.Drain()
+						if toolName != nil {
+							*toolName = strings.TrimPrefix(*toolName, "functions.")
+							var args api.ToolCallFunctionArguments
+							if err := json.Unmarshal([]byte(toolContent), &args); err != nil {
+								errStr := fmt.Sprintf("error parsing tool call: raw='%s', err=%s", toolContent, err.Error())
+								ch <- gin.H{"error": errStr}
+								return
+							}
+							res.Message.ToolCalls = []api.ToolCall{{Function: api.ToolCallFunction{Name: *toolName, Arguments: args}}}
+						}
+					}
+
+					// only send messages with meaningful content (empty messages confuse clients)
+					if res.Message.Content != "" || res.Message.Thinking != "" || len(res.Message.ToolCalls) > 0 || res.Done {
 						ch <- res
 					}
+
+					return
+				}
+
+				if thinkingState != nil {
+					thinkingContent, remainingContent := thinkingState.AddContent(res.Message.Content)
+					if thinkingContent == "" && remainingContent == "" && !r.Done {
+						// need to accumulate more to decide what to send
+						return
+					}
+					res.Message.Content = remainingContent
+					res.Message.Thinking = thinkingContent
+				}
+
+				if len(req.Tools) > 0 {
+					toolCalls, content := toolParser.Add(res.Message.Content)
+					if len(content) > 0 {
+						res.Message.Content = content
+					} else if len(toolCalls) > 0 {
+						res.Message.ToolCalls = toolCalls
+						res.Message.Content = ""
+					} else if res.Message.Thinking != "" {
+						// don't return
+					} else {
+						if r.Done {
+							res.Message.Content = toolParser.Content()
+							ch <- res
+						}
+						return
+					}
+				}
+
+				ch <- res
+			}); err != nil {
+				ch <- gin.H{"error": err.Error()}
+			}
+		}()
+
+		if req.Stream != nil && !*req.Stream {
+			var resp api.ChatResponse
+			var toolCalls []api.ToolCall
+			var sbThinking strings.Builder
+			var sbContent strings.Builder
+			for rr := range ch {
+				switch t := rr.(type) {
+				case api.ChatResponse:
+					sbThinking.WriteString(t.Message.Thinking)
+					sbContent.WriteString(t.Message.Content)
+					resp = t
+					if len(req.Tools) > 0 {
+						toolCalls = append(toolCalls, t.Message.ToolCalls...)
+					}
+				case gin.H:
+					msg, ok := t["error"].(string)
+					if !ok {
+						msg = "unexpected error format in response"
+					}
+
+					c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
+					return
+				default:
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
 					return
 				}
 			}
 
-			ch <- res
-		}); err != nil {
-			ch <- gin.H{"error": err.Error()}
-		}
-	}()
+			resp.Message.Content = sbContent.String()
+			resp.Message.Thinking = sbThinking.String()
 
-	if req.Stream != nil && !*req.Stream {
-		var resp api.ChatResponse
-		var toolCalls []api.ToolCall
-		var sbThinking strings.Builder
-		var sbContent strings.Builder
-		for rr := range ch {
-			switch t := rr.(type) {
-			case api.ChatResponse:
-				sbThinking.WriteString(t.Message.Thinking)
-				sbContent.WriteString(t.Message.Content)
-				resp = t
-				if len(req.Tools) > 0 {
-					toolCalls = append(toolCalls, t.Message.ToolCalls...)
-				}
-			case gin.H:
-				msg, ok := t["error"].(string)
-				if !ok {
-					msg = "unexpected error format in response"
-				}
-
-				c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
-				return
-			default:
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
-				return
+			if len(toolCalls) > 0 {
+				resp.Message.ToolCalls = toolCalls
 			}
+
+			c.JSON(http.StatusOK, resp)
+			return
 		}
 
-		resp.Message.Content = sbContent.String()
-		resp.Message.Thinking = sbThinking.String()
-
-		if len(toolCalls) > 0 {
-			resp.Message.ToolCalls = toolCalls
+		streamResponse(c, ch)
+	} else {
+		// OpenVINO backend
+		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), model.ModelBackend, model.ModelType, model.InferDevice, caps, req.Options, req.KeepAlive)
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
+			return
+		} else if err != nil {
+			handleScheduleError(c, req.Model, err)
+			return
 		}
 
-		c.JSON(http.StatusOK, resp)
-		return
+		checkpointLoaded := time.Now()
+
+		log.Printf("ChatHandler model: %+v", model)
+		log.Printf("ChatHandler model backend: %s", model.ModelBackend)
+		log.Printf("ChatHandler model type: %s", model.ModelType)
+		log.Printf("ChatHandler model infer device: %s", model.InferDevice)
+
+		if len(req.Messages) == 0 {
+			c.JSON(http.StatusOK, api.ChatResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Message:    api.Message{Role: "assistant"},
+				Done:       true,
+				DoneReason: "load",
+			})
+			return
+		}
+
+		msgs := append(model.Messages, req.Messages...)
+		if len(req.Messages) > 0 && req.Messages[0].Role != "system" && model.System != "" {
+			msgs = append([]api.Message{{Role: "system", Content: model.System}}, msgs...)
+		}
+		msgs = filterThinkTags(msgs, model)
+
+		// log.Printf("ChatHandler msgs: %+v", msgs)
+		// log.Printf("ChatHandler tools: %+v", req.Tools)
+		// log.Printf("ChatHandler think: %+v", req.Think)
+		// log.Printf("ChatHandler format: %+v", req.Format)
+		// log.Printf("ChatHandler options: %+v", opts)
+		// log.Printf("ChatHandler keep alive: %+v", req.KeepAlive)
+		// log.Printf("ChatHandler stream: %+v", req.Stream)
+		// log.Printf("ChatHandler request: %+v", req)
+
+		// For OpenVINO, use genaiChatPrompt which skips tokenizer-based context checks
+		prompt, images, err := genaiChatPrompt(c.Request.Context(), model, opts, msgs, req.Tools, req.Think)
+		if err != nil {
+			slog.Error("chat prompt error", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		log.Printf("ChatHandler prompt: %s", prompt)
+		log.Printf("ChatHandler images count: %d", len(images))
+
+		ch := make(chan any)
+		go func() {
+			defer close(ch)
+			if err := r.Completion(c.Request.Context(), llamaserver.CompletionRequest{
+				Prompt:  prompt,
+				Images:  images,
+				Format:  req.Format,
+				Options: opts,
+			}, func(cr llamaserver.CompletionResponse) {
+				res := api.ChatResponse{
+					Model:     req.Model,
+					CreatedAt: time.Now().UTC(),
+					Message:   api.Message{Role: "assistant", Content: cr.Content},
+					Done:      cr.Done,
+					Metrics: api.Metrics{
+						PromptEvalCount:    cr.PromptEvalCount,
+						PromptEvalDuration: cr.PromptEvalDuration,
+						EvalCount:          cr.EvalCount,
+						EvalDuration:       cr.EvalDuration,
+					},
+				}
+				if cr.Done {
+					res.DoneReason = cr.DoneReason.String()
+					res.TotalDuration = time.Since(checkpointStart)
+					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+				}
+				ch <- res
+			}); err != nil {
+				ch <- gin.H{"error": err.Error()}
+			}
+		}()
+
+		if req.Stream != nil && !*req.Stream {
+			var resp api.ChatResponse
+			var sbContent strings.Builder
+			for rr := range ch {
+				switch t := rr.(type) {
+				case api.ChatResponse:
+					sbContent.WriteString(t.Message.Content)
+					resp = t
+				case gin.H:
+					msg, ok := t["error"].(string)
+					if !ok {
+						msg = "unexpected error format in response"
+					}
+					c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
+					return
+				default:
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
+					return
+				}
+			}
+			resp.Message.Content = sbContent.String()
+			c.JSON(http.StatusOK, resp)
+			return
+		}
+
+		streamResponse(c, ch)
 	}
-
-	streamResponse(c, ch)
 }
 
 func handleScheduleError(c *gin.Context, name string, err error) {

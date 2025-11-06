@@ -19,6 +19,60 @@ type tokenizeFunc func(context.Context, string) ([]int, error)
 // chatPrompt accepts a list of messages and returns the prompt and images that should be used for the next chat turn.
 // chatPrompt truncates any messages that exceed the context window of the model, making sure to always include 1) the
 // latest message and 2) system messages
+// genaiChatPrompt builds a chat prompt for GenAI backend (OpenVINO)
+// This version skips tokenizer-based context length checks as GenAI handles it internally
+func genaiChatPrompt(ctx context.Context, m *Model, opts *api.Options, msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (prompt string, images []llamaserver.ImageData, _ error) {
+	var system []api.Message
+
+	// Extract system messages
+	for _, msg := range msgs {
+		if msg.Role == "system" {
+			system = append(system, msg)
+		}
+	}
+
+	// Process images from all messages
+	for cnt, msg := range msgs {
+		if slices.Contains(m.Config.ModelFamilies, "mllama") && len(msg.Images) > 1 {
+			return "", nil, errors.New("this model only supports one image while more than one image requested")
+		}
+
+		var prefix string
+		content := msg.Content
+
+		for _, imgBytes := range msg.Images {
+			imgData := llamaserver.ImageData{
+				ID:   len(images),
+				Data: imgBytes,
+			}
+
+			imgTag := fmt.Sprintf("[img-%d]", imgData.ID)
+			if !strings.Contains(content, "[img]") {
+				prefix += imgTag
+			} else {
+				content = strings.Replace(content, "[img]", imgTag, 1)
+			}
+
+			images = append(images, imgData)
+		}
+		msgs[cnt].Content = prefix + content
+	}
+
+	// Build final prompt using template
+	var b bytes.Buffer
+	thinkVal := false
+	thinkLevel := ""
+	if think != nil {
+		thinkVal = think.Bool()
+		thinkLevel = think.String()
+	}
+	if err := m.Template.Execute(&b, template.Values{Messages: msgs, Tools: tools, Think: thinkVal, ThinkLevel: thinkLevel, IsThinkSet: think != nil}); err != nil {
+		return "", nil, err
+	}
+
+	return b.String(), images, nil
+}
+
 func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.Options, msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (prompt string, images []llamaserver.ImageData, _ error) {
 	var system []api.Message
 
