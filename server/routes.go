@@ -174,7 +174,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
-	log.Printf("GenerateHandler req: %+v", req)
+	// log.Printf("GenerateHandler req: %+v", req)
 
 	name := model.ParseName(req.Model)
 	if !name.IsValid() {
@@ -251,7 +251,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		// updated template supporting thinking
 	}
 
-	log.Printf("GenerateHandler req: %+v", req)
+	// log.Printf("GenerateHandler req: %+v", req)
 
 	if m.ModelBackend != "OpenVINO" {
 		r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)

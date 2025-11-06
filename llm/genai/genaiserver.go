@@ -796,7 +796,7 @@ func (s *GenaillmServer) Close() error {
 	s.modelLock.Unlock()
 
 	if s.cmd != nil {
-		slog.Debug("stopping llama server")
+		log.Printf("stopping llama server", "pid", s.Pid())
 		if s.cmd.ProcessState != nil && s.cmd.ProcessState.Exited() {
 			s.Clear(s.modelName)
 			s.modelName = ""

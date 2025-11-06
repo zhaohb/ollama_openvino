@@ -180,7 +180,9 @@ func (s *Scheduler) processPending(ctx context.Context) {
 			for {
 				var runnerToExpire *runnerRef
 				s.loadedMu.Lock()
-				runner := s.loaded[pending.model.ModelPath]
+				// runner := s.loaded[pending.model.ModelPath]
+				runner := s.loaded[pending.model.ShortName]
+				log.Printf("llmrequest: %s, %s, %s, %s", pending.modeltype, pending.model.ModelPath, pending.model.Name, pending.model.ShortName)
 				loadedCount := len(s.loaded)
 				s.loadedMu.Unlock()
 				if runner != nil {
@@ -685,8 +687,12 @@ func (runner *runnerRef) unload() {
 	if runner.llama != nil {
 		runner.llama.Close()
 	}
+	if runner.genai != nil {
+		runner.genai.Close()
+	}
 	runner.model = nil
 	runner.llama = nil
+	runner.genai = nil
 	runner.Options = nil
 	runner.gpus = nil
 }
@@ -715,11 +721,20 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths) || // have the adapters changed?
-		!reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) || // have the projectors changed?
-		!reflect.DeepEqual(optsExisting, optsNew) || // have the runner options changed?
-		runner.llama.Ping(ctx) != nil {
-		return true
+	if req.model.ModelBackend != "OpenVINO" {
+		if !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths) || // have the adapters changed?
+			!reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) || // have the projectors changed?
+			!reflect.DeepEqual(optsExisting, optsNew) || // have the runner options changed?
+			runner.llama.Ping(ctx) != nil {
+			return true
+		}
+	} else {
+		if !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths) || // have the adapters changed?
+			!reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths) || // have the projectors changed?
+			!reflect.DeepEqual(optsExisting, optsNew) || // have the runner options changed?
+			runner.genai.Ping(ctx) != nil {
+			return true
+		}
 	}
 
 	return false
@@ -877,6 +892,10 @@ func (s *Scheduler) unloadAllRunners() {
 		if runner.llama != nil {
 			slog.Debug("shutting down runner", "model", model)
 			runner.llama.Close()
+		}
+		if runner.genai != nil {
+			slog.Debug("shutting down genai runner", "model", model)
+			runner.genai.Close()
 		}
 	}
 }
