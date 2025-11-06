@@ -1,8 +1,18 @@
 <div align="center">
-  <a href="https://ollama.com">
-    <img alt="ollama" width="240" src="https://github.com/ollama/ollama/assets/3325447/0d0b44e2-8f4a-4e99-9b52-a5c1c741c8f7">
+  <a href="https://ollama.com" />
+    <img alt="ollama" height="100px" src="https://github.com/ollama/ollama/assets/3325447/0d0b44e2-8f4a-4e99-9b52-a5c1c741c8f7">
+  </a>
+  <a href="https://github.com/openvinotoolkit/openvino" />
+    <img alt="openvino" height="100px" src="./images/openvino-logo-purple-black.svg">
   </a>
 </div>
+
+# OpenVINO Integration with Ollama
+
+
+<details>
+  <summary>Click here to expand/collapse content</summary>
+  <ul>
 
 # Ollama
 
@@ -10,7 +20,7 @@ Get up and running with large language models.
 
 ### macOS
 
-[Download](https://ollama.com/download/Ollama.dmg)
+[Download](https://ollama.com/download/Ollama-darwin.zip)
 
 ### Windows
 
@@ -40,10 +50,10 @@ The official [Ollama Docker image](https://hub.docker.com/r/ollama/ollama) `olla
 
 ## Quickstart
 
-To run and chat with [Gemma 3](https://ollama.com/library/gemma3):
+To run and chat with [Llama 3.2](https://ollama.com/library/llama3.2):
 
 ```shell
-ollama run gemma3
+ollama run llama3.2
 ```
 
 ## Model library
@@ -54,15 +64,8 @@ Here are some example models that can be downloaded:
 
 | Model              | Parameters | Size  | Download                         |
 | ------------------ | ---------- | ----- | -------------------------------- |
-| Gemma 3            | 1B         | 815MB | `ollama run gemma3:1b`           |
-| Gemma 3            | 4B         | 3.3GB | `ollama run gemma3`              |
-| Gemma 3            | 12B        | 8.1GB | `ollama run gemma3:12b`          |
-| Gemma 3            | 27B        | 17GB  | `ollama run gemma3:27b`          |
-| QwQ                | 32B        | 20GB  | `ollama run qwq`                 |
 | DeepSeek-R1        | 7B         | 4.7GB | `ollama run deepseek-r1`         |
 | DeepSeek-R1        | 671B       | 404GB | `ollama run deepseek-r1:671b`    |
-| Llama 4            | 109B       | 67GB  | `ollama run llama4:scout`        |
-| Llama 4            | 400B       | 245GB | `ollama run llama4:maverick`     |
 | Llama 3.3          | 70B        | 43GB  | `ollama run llama3.3`            |
 | Llama 3.2          | 3B         | 2.0GB | `ollama run llama3.2`            |
 | Llama 3.2          | 1B         | 1.3GB | `ollama run llama3.2:1b`         |
@@ -71,7 +74,10 @@ Here are some example models that can be downloaded:
 | Llama 3.1          | 8B         | 4.7GB | `ollama run llama3.1`            |
 | Llama 3.1          | 405B       | 231GB | `ollama run llama3.1:405b`       |
 | Phi 4              | 14B        | 9.1GB | `ollama run phi4`                |
-| Phi 4 Mini         | 3.8B       | 2.5GB | `ollama run phi4-mini`           |
+| Phi 3 Mini         | 3.8B       | 2.3GB | `ollama run phi3`                |
+| Gemma 2            | 2B         | 1.6GB | `ollama run gemma2:2b`           |
+| Gemma 2            | 9B         | 5.5GB | `ollama run gemma2`              |
+| Gemma 2            | 27B        | 16GB  | `ollama run gemma2:27b`          |
 | Mistral            | 7B         | 4.1GB | `ollama run mistral`             |
 | Moondream 2        | 1.4B       | 829MB | `ollama run moondream`           |
 | Neural Chat        | 7B         | 4.1GB | `ollama run neural-chat`         |
@@ -79,7 +85,7 @@ Here are some example models that can be downloaded:
 | Code Llama         | 7B         | 3.8GB | `ollama run codellama`           |
 | Llama 2 Uncensored | 7B         | 3.8GB | `ollama run llama2-uncensored`   |
 | LLaVA              | 7B         | 4.5GB | `ollama run llava`               |
-| Granite-3.3         | 8B         | 4.9GB | `ollama run granite3.3`          |
+| Solar              | 10.7B      | 6.1GB | `ollama run solar`               |
 
 > [!NOTE]
 > You should have at least 8 GB of RAM available to run the 7B models, 16 GB to run the 13B models, and 32 GB to run the 33B models.
@@ -279,7 +285,6 @@ See the [API documentation](./docs/api.md) for all endpoints.
 ### Web & Desktop
 
 - [Open WebUI](https://github.com/open-webui/open-webui)
-- [SwiftChat (macOS with ReactNative)](https://github.com/aws-samples/swift-chat)
 - [Enchanted (macOS native)](https://github.com/AugustDev/enchanted)
 - [Hollama](https://github.com/fmaclen/hollama)
 - [Lollms-Webui](https://github.com/ParisNeo/lollms-webui)
@@ -287,13 +292,12 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Bionic GPT](https://github.com/bionic-gpt/bionic-gpt)
 - [HTML UI](https://github.com/rtcfirefly/ollama-ui)
 - [Saddle](https://github.com/jikkuatwork/saddle)
-- [TagSpaces](https://www.tagspaces.org) (A platform for file-based apps, [utilizing Ollama](https://docs.tagspaces.org/ai/) for the generation of tags and descriptions)
 - [Chatbot UI](https://github.com/ivanfioravanti/chatbot-ollama)
 - [Chatbot UI v2](https://github.com/mckaywrigley/chatbot-ui)
 - [Typescript UI](https://github.com/ollama-interface/Ollama-Gui?tab=readme-ov-file)
 - [Minimalistic React UI for Ollama Models](https://github.com/richawo/minimal-llm-ui)
 - [Ollamac](https://github.com/kevinhermawan/Ollamac)
-- [big-AGI](https://github.com/enricoros/big-AGI)
+- [big-AGI](https://github.com/enricoros/big-AGI/blob/main/docs/config-local-ollama.md)
 - [Cheshire Cat assistant framework](https://github.com/cheshire-cat-ai/core)
 - [Amica](https://github.com/semperai/amica)
 - [chatd](https://github.com/BruceMacD/chatd)
@@ -314,8 +318,6 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Ollama Basic Chat: Uses HyperDiv Reactive UI](https://github.com/rapidarchitect/ollama_basic_chat)
 - [Ollama-chats RPG](https://github.com/drazdra/ollama-chats)
 - [IntelliBar](https://intellibar.app/) (AI-powered assistant for macOS)
-- [Jirapt](https://github.com/AliAhmedNada/jirapt) (Jira Integration to generate issues, tasks, epics)
-- [ojira](https://github.com/AliAhmedNada/ojira) (Jira chrome plugin to easily generate descriptions for tasks)
 - [QA-Pilot](https://github.com/reid41/QA-Pilot) (Interactive chat tool that can leverage Ollama models for rapid understanding and navigation of GitHub code repositories)
 - [ChatOllama](https://github.com/sugarforever/chat-ollama) (Open Source Chatbot based on Ollama with Knowledge Bases)
 - [CRAG Ollama Chat](https://github.com/Nagi-ovo/CRAG-Ollama-Chat) (Simple Web Search with Corrective RAG)
@@ -329,14 +331,13 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [RWKV-Runner](https://github.com/josStorer/RWKV-Runner) (RWKV offline LLM deployment tool, also usable as a client for ChatGPT and Ollama)
 - [Ollama Grid Search](https://github.com/dezoito/ollama-grid-search) (app to evaluate and compare models)
 - [Olpaka](https://github.com/Otacon/olpaka) (User-friendly Flutter Web App for Ollama)
-- [Casibase](https://casibase.org) (An open source AI knowledge base and dialogue system combining the latest RAG, SSO, ollama support, and multiple large language models.)
 - [OllamaSpring](https://github.com/CrazyNeil/OllamaSpring) (Ollama Client for macOS)
 - [LLocal.in](https://github.com/kartikm7/llocal) (Easy to use Electron Desktop Client for Ollama)
 - [Shinkai Desktop](https://github.com/dcSpark/shinkai-apps) (Two click install Local AI using Ollama + Files + RAG)
-- [AiLama](https://github.com/zeyoyt/ailama) (A Discord User App that allows you to interact with Ollama anywhere in Discord)
+- [AiLama](https://github.com/zeyoyt/ailama) (A Discord User App that allows you to interact with Ollama anywhere in discord )
 - [Ollama with Google Mesop](https://github.com/rapidarchitect/ollama_mesop/) (Mesop Chat Client implementation with Ollama)
 - [R2R](https://github.com/SciPhi-AI/R2R) (Open-source RAG engine)
-- [Ollama-Kis](https://github.com/elearningshow/ollama-kis) (A simple easy-to-use GUI with sample custom LLM for Drivers Education)
+- [Ollama-Kis](https://github.com/elearningshow/ollama-kis) (A simple easy to use GUI with sample custom LLM for Drivers Education)
 - [OpenGPA](https://opengpa.org) (Open-source offline-first Enterprise Agentic Application)
 - [Painting Droid](https://github.com/mateuszmigas/painting-droid) (Painting app with AI integrations)
 - [Kerlig AI](https://www.kerlig.com/) (AI writing assistant for macOS)
@@ -345,22 +346,22 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [LLMStack](https://github.com/trypromptly/LLMStack) (No-code multi-agent framework to build LLM agents and workflows)
 - [BoltAI for Mac](https://boltai.com) (AI Chat Client for Mac)
 - [Harbor](https://github.com/av/harbor) (Containerized LLM Toolkit with Ollama as default backend)
-- [PyGPT](https://github.com/szczyglis-dev/py-gpt) (AI desktop assistant for Linux, Windows, and Mac)
-- [Alpaca](https://github.com/Jeffser/Alpaca) (An Ollama client application for Linux and macOS made with GTK4 and Adwaita)
+- [PyGPT](https://github.com/szczyglis-dev/py-gpt) (AI desktop assistant for Linux, Windows and Mac)
+- [Alpaca](https://github.com/Jeffser/Alpaca) (An Ollama client application for linux and macos made with GTK4 and Adwaita)
 - [AutoGPT](https://github.com/Significant-Gravitas/AutoGPT/blob/master/docs/content/platform/ollama.md) (AutoGPT Ollama integration)
 - [Go-CREW](https://www.jonathanhecl.com/go-crew/) (Powerful Offline RAG in Golang)
 - [PartCAD](https://github.com/openvmp/partcad/) (CAD model generation with OpenSCAD and CadQuery)
-- [Ollama4j Web UI](https://github.com/ollama4j/ollama4j-web-ui) - Java-based Web UI for Ollama built with Vaadin, Spring Boot, and Ollama4j
+- [Ollama4j Web UI](https://github.com/ollama4j/ollama4j-web-ui) - Java-based Web UI for Ollama built with Vaadin, Spring Boot and Ollama4j
 - [PyOllaMx](https://github.com/kspviswa/pyOllaMx) - macOS application capable of chatting with both Ollama and Apple MLX models.
-- [Cline](https://github.com/cline/cline) - Formerly known as Claude Dev is a VSCode extension for multi-file/whole-repo coding
+- [Claude Dev](https://github.com/saoudrizwan/claude-dev) - VSCode extension for multi-file/whole-repo coding
 - [Cherry Studio](https://github.com/kangfenmao/cherry-studio) (Desktop client with Ollama support)
-- [ConfiChat](https://github.com/1runeberg/confichat) (Lightweight, standalone, multi-platform, and privacy-focused LLM chat interface with optional encryption)
+- [ConfiChat](https://github.com/1runeberg/confichat) (Lightweight, standalone, multi-platform, and privacy focused LLM chat interface with optional encryption)
 - [Archyve](https://github.com/nickthecook/archyve) (RAG-enabling document library)
 - [crewAI with Mesop](https://github.com/rapidarchitect/ollama-crew-mesop) (Mesop Web Interface to run crewAI with Ollama)
 - [Tkinter-based client](https://github.com/chyok/ollama-gui) (Python tkinter-based Client for Ollama)
 - [LLMChat](https://github.com/trendy-design/llmchat) (Privacy focused, 100% local, intuitive all-in-one chat interface)
 - [Local Multimodal AI Chat](https://github.com/Leon-Sander/Local-Multimodal-AI-Chat) (Ollama-based LLM Chat with support for multiple features, including PDF RAG, voice chat, image-based interactions, and integration with OpenAI.)
-- [ARGO](https://github.com/xark-argo/argo) (Locally download and run Ollama and Huggingface models with RAG and deep research on Mac/Windows/Linux)
+- [ARGO](https://github.com/xark-argo/argo) (Locally download and run Ollama and Huggingface models with RAG on Mac/Windows/Linux)
 - [OrionChat](https://github.com/EliasPereirah/OrionChat) - OrionChat is a web interface for chatting with different AI providers
 - [G1](https://github.com/bklieger-groq/g1) (Prototype of using prompting strategies to improve the LLM's reasoning through o1-like reasoning chains.)
 - [Web management](https://github.com/lemonit-eric-mao/ollama-web-management) (Web management page)
@@ -372,7 +373,7 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [DualMind](https://github.com/tcsenpai/dualmind) (Experimental app allowing two models to talk to each other in the terminal or in a web interface)
 - [ollamarama-matrix](https://github.com/h1ddenpr0cess20/ollamarama-matrix) (Ollama chatbot for the Matrix chat protocol)
 - [ollama-chat-app](https://github.com/anan1213095357/ollama-chat-app) (Flutter-based chat app)
-- [Perfect Memory AI](https://www.perfectmemory.ai/) (Productivity AI assists personalized by what you have seen on your screen, heard, and said in the meetings)
+- [Perfect Memory AI](https://www.perfectmemory.ai/) (Productivity AI assists personalized by what you have seen on your screen, heard and said in the meetings)
 - [Hexabot](https://github.com/hexastack/hexabot) (A conversational AI builder)
 - [Reddit Rate](https://github.com/rapidarchitect/reddit_analyzer) (Search and Rate Reddit topics with a weighted summation)
 - [OpenTalkGpt](https://github.com/adarshM84/OpenTalkGpt) (Chrome Extension to manage open-source models supported by Ollama, create custom models, and chat with models from a user-friendly UI)
@@ -390,27 +391,6 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [ChibiChat](https://github.com/CosmicEventHorizon/ChibiChat) (Kotlin-based Android app to chat with Ollama and Koboldcpp API endpoints)
 - [LocalLLM](https://github.com/qusaismael/localllm) (Minimal Web-App to run ollama models on it with a GUI)
 - [Ollamazing](https://github.com/buiducnhat/ollamazing) (Web extension to run Ollama models)
-- [OpenDeepResearcher-via-searxng](https://github.com/benhaotang/OpenDeepResearcher-via-searxng) (A Deep Research equivalent endpoint with Ollama support for running locally)
-- [AntSK](https://github.com/AIDotNet/AntSK) (Out-of-the-box & Adaptable RAG Chatbot)
-- [MaxKB](https://github.com/1Panel-dev/MaxKB/) (Ready-to-use & flexible RAG Chatbot)
-- [yla](https://github.com/danielekp/yla) (Web interface to freely interact with your customized models)
-- [LangBot](https://github.com/RockChinQ/LangBot) (LLM-based instant messaging bots platform, with Agents, RAG features, supports multiple platforms)
-- [1Panel](https://github.com/1Panel-dev/1Panel/) (Web-based Linux Server Management Tool)
-- [AstrBot](https://github.com/Soulter/AstrBot/) (User-friendly LLM-based multi-platform chatbot with a WebUI, supporting RAG, LLM agents, and plugins integration)
-- [Reins](https://github.com/ibrahimcetin/reins) (Easily tweak parameters, customize system prompts per chat, and enhance your AI experiments with reasoning model support.)
-- [Flufy](https://github.com/Aharon-Bensadoun/Flufy) (A beautiful chat interface for interacting with Ollama's API. Built with React, TypeScript, and Material-UI.)
-- [Ellama](https://github.com/zeozeozeo/ellama) (Friendly native app to chat with an Ollama instance)
-- [screenpipe](https://github.com/mediar-ai/screenpipe) Build agents powered by your screen history
-- [Ollamb](https://github.com/hengkysteen/ollamb) (Simple yet rich in features, cross-platform built with Flutter and designed for Ollama. Try the [web demo](https://hengkysteen.github.io/demo/ollamb/).)
-- [Writeopia](https://github.com/Writeopia/Writeopia) (Text editor with integration with Ollama)
-- [AppFlowy](https://github.com/AppFlowy-IO/AppFlowy) (AI collaborative workspace with Ollama, cross-platform and self-hostable)
-- [Lumina](https://github.com/cushydigit/lumina.git) (A lightweight, minimal React.js frontend for interacting with Ollama servers)
-- [Tiny Notepad](https://pypi.org/project/tiny-notepad) (A lightweight, notepad-like interface to chat with ollama available on PyPI)
-- [macLlama (macOS native)](https://github.com/hellotunamayo/macLlama) (A native macOS GUI application for interacting with Ollama models, featuring a chat interface.) 
-- [GPTranslate](https://github.com/philberndt/GPTranslate) (A fast and lightweight, AI powered desktop translation application written with Rust and Tauri. Features real-time translation with OpenAI/Azure/Ollama.)
-- [ollama launcher](https://github.com/NGC13009/ollama-launcher) (A launcher for Ollama, aiming to provide users with convenient functions such as ollama server launching, management, or configuration.)
-- [ai-hub](https://github.com/Aj-Seven/ai-hub) (AI Hub supports multiple models via API keys and Chat support via Ollama API.)
-- [Mayan EDMS](https://gitlab.com/mayan-edms/mayan-edms) (Open source document management system to organize, tag, search, and automate your files with powerful Ollama driven workflows.)
 
 ### Cloud
 
@@ -450,17 +430,10 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [SwollamaCLI](https://github.com/marcusziade/Swollama) bundled with the Swollama Swift package. [Demo](https://github.com/marcusziade/Swollama?tab=readme-ov-file#cli-usage)
 - [aichat](https://github.com/sigoden/aichat) All-in-one LLM CLI tool featuring Shell Assistant, Chat-REPL, RAG, AI tools & agents, with access to OpenAI, Claude, Gemini, Ollama, Groq, and more.
 - [PowershAI](https://github.com/rrg92/powershai) PowerShell module that brings AI to terminal on Windows, including support for Ollama
-- [DeepShell](https://github.com/Abyss-c0re/deepshell) Your self-hosted AI assistant. Interactive Shell, Files and Folders analysis.
 - [orbiton](https://github.com/xyproto/orbiton) Configuration-free text editor and IDE with support for tab completion with Ollama.
-- [orca-cli](https://github.com/molbal/orca-cli) Ollama Registry CLI Application - Browse, pull, and download models from Ollama Registry in your terminal.
-- [GGUF-to-Ollama](https://github.com/jonathanhecl/gguf-to-ollama) - Importing GGUF to Ollama made easy (multiplatform)
-- [AWS-Strands-With-Ollama](https://github.com/rapidarchitect/ollama_strands) - AWS Strands Agents with Ollama Examples
-- [ollama-multirun](https://github.com/attogram/ollama-multirun) - A bash shell script to run a single prompt against any or all of your locally installed ollama models, saving the output and performance statistics as easily navigable web pages. ([Demo](https://attogram.github.io/ai_test_zone/))
-- [ollama-bash-toolshed](https://github.com/attogram/ollama-bash-toolshed) - Bash scripts to chat with tool using models. Add new tools to your shed with ease. Runs on Ollama.
 
 ### Apple Vision Pro
 
-- [SwiftChat](https://github.com/aws-samples/swift-chat) (Cross-platform AI chat app supporting Apple Vision Pro via "Designed for iPad")
 - [Enchanted](https://github.com/AugustDev/enchanted)
 
 ### Database
@@ -483,7 +456,7 @@ See the [API documentation](./docs/api.md) for all endpoints.
 
 ### Libraries
 
-- [LangChain](https://python.langchain.com/docs/integrations/chat/ollama/) and [LangChain.js](https://js.langchain.com/docs/integrations/chat/ollama/) with [example](https://js.langchain.com/docs/tutorials/local_rag/)
+- [LangChain](https://python.langchain.com/docs/integrations/llms/ollama) and [LangChain.js](https://js.langchain.com/docs/integrations/chat/ollama/) with [example](https://js.langchain.com/docs/tutorials/local_rag/)
 - [Firebase Genkit](https://firebase.google.com/docs/genkit/plugins/ollama)
 - [crewAI](https://github.com/crewAIInc/crewAI)
 - [Yacana](https://remembersoftwares.github.io/yacana/) (User-friendly multi-agent framework for brainstorming and executing predetermined flows with built-in tool integration)
@@ -523,30 +496,24 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Ollamaclient for Golang](https://github.com/xyproto/ollamaclient)
 - [High-level function abstraction in Go](https://gitlab.com/tozd/go/fun)
 - [Ollama PHP](https://github.com/ArdaGnsrn/ollama-php)
-- [Agents-Flex for Java](https://github.com/agents-flex/agents-flex) with [example](https://github.com/agents-flex/agents-flex/tree/main/agents-flex-llm/agents-flex-llm-ollama/src/test/java/com/agentsflex/llm/ollama)
+- [Agents-Flex for Java](https://github.com/agents-flex/agents-flex) with [example](https://github.com/agents-flex/agents-flex/tree/main/agents-flex-llm/agents-flex-llm-ollama)
 - [Parakeet](https://github.com/parakeet-nest/parakeet) is a GoLang library, made to simplify the development of small generative AI applications with Ollama.
 - [Haverscript](https://github.com/andygill/haverscript) with [examples](https://github.com/andygill/haverscript/tree/main/examples)
 - [Ollama for Swift](https://github.com/mattt/ollama-swift)
 - [Swollama for Swift](https://github.com/marcusziade/Swollama) with [DocC](https://marcusziade.github.io/Swollama/documentation/swollama/)
 - [GoLamify](https://github.com/prasad89/golamify)
 - [Ollama for Haskell](https://github.com/tusharad/ollama-haskell)
-- [multi-llm-ts](https://github.com/nbonamy/multi-llm-ts) (A Typescript/JavaScript library allowing access to different LLM in a unified API)
+- [multi-llm-ts](https://github.com/nbonamy/multi-llm-ts) (A Typescript/JavaScript library allowing access to different LLM in unified API)
 - [LlmTornado](https://github.com/lofcz/llmtornado) (C# library providing a unified interface for major FOSS & Commercial inference APIs)
 - [Ollama for Zig](https://github.com/dravenk/ollama-zig)
 - [Abso](https://github.com/lunary-ai/abso) (OpenAI-compatible TypeScript SDK for any LLM provider)
-- [Nichey](https://github.com/goodreasonai/nichey) is a Python package for generating custom wikis for your research topic
-- [Ollama for D](https://github.com/kassane/ollama-d)
-- [OllamaPlusPlus](https://github.com/HardCodeDev777/OllamaPlusPlus) (Very simple C++ library for Ollama)
 
 ### Mobile
 
-- [SwiftChat](https://github.com/aws-samples/swift-chat) (Lightning-fast Cross-platform AI chat app with native UI for Android, iOS, and iPad)
 - [Enchanted](https://github.com/AugustDev/enchanted)
 - [Maid](https://github.com/Mobile-Artificial-Intelligence/maid)
 - [Ollama App](https://github.com/JHubi1/ollama-app) (Modern and easy-to-use multi-platform client for Ollama)
-- [ConfiChat](https://github.com/1runeberg/confichat) (Lightweight, standalone, multi-platform, and privacy-focused LLM chat interface with optional encryption)
-- [Ollama Android Chat](https://github.com/sunshine0523/OllamaServer) (No need for Termux, start the Ollama service with one click on an Android device)
-- [Reins](https://github.com/ibrahimcetin/reins) (Easily tweak parameters, customize system prompts per chat, and enhance your AI experiments with reasoning model support.)
+- [ConfiChat](https://github.com/1runeberg/confichat) (Lightweight, standalone, multi-platform, and privacy focused LLM chat interface with optional encryption)
 
 ### Extensions & Plugins
 
@@ -568,7 +535,7 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Obsidian Local GPT plugin](https://github.com/pfrankov/obsidian-local-gpt)
 - [Open Interpreter](https://docs.openinterpreter.com/language-model-setup/local-models/ollama)
 - [Llama Coder](https://github.com/ex3ndr/llama-coder) (Copilot alternative using Ollama)
-- [Ollama Copilot](https://github.com/bernardo-bruning/ollama-copilot) (Proxy that allows you to use Ollama as a copilot like GitHub Copilot)
+- [Ollama Copilot](https://github.com/bernardo-bruning/ollama-copilot) (Proxy that allows you to use ollama as a copilot like Github copilot)
 - [twinny](https://github.com/rjmacarthy/twinny) (Copilot and Copilot chat alternative using Ollama)
 - [Wingman-AI](https://github.com/RussellCanfield/wingman-ai) (Copilot code and chat alternative using Ollama and Hugging Face)
 - [Page Assist](https://github.com/n4ze3m/page-assist) (Chrome Extension)
@@ -578,8 +545,8 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Discord-Ollama Chat Bot](https://github.com/kevinthedang/discord-ollama) (Generalized TypeScript Discord Bot w/ Tuning Documentation)
 - [ChatGPTBox: All in one browser extension](https://github.com/josStorer/chatGPTBox) with [Integrating Tutorial](https://github.com/josStorer/chatGPTBox/issues/616#issuecomment-1975186467)
 - [Discord AI chat/moderation bot](https://github.com/rapmd73/Companion) Chat/moderation bot written in python. Uses Ollama to create personalities.
-- [Headless Ollama](https://github.com/nischalj10/headless-ollama) (Scripts to automatically install ollama client & models on any OS for apps that depend on ollama server)
-- [Terraform AWS Ollama & Open WebUI](https://github.com/xuyangbocn/terraform-aws-self-host-llm) (A Terraform module to deploy on AWS a ready-to-use Ollama service, together with its front-end Open WebUI service.)
+- [Headless Ollama](https://github.com/nischalj10/headless-ollama) (Scripts to automatically install ollama client & models on any OS for apps that depends on ollama server)
+- [Terraform AWS Ollama & Open WebUI](https://github.com/xuyangbocn/terraform-aws-self-host-llm) (A Terraform module to deploy on AWS a ready-to-use Ollama service, together with its front end Open WebUI service.)
 - [node-red-contrib-ollama](https://github.com/jakubburkiewicz/node-red-contrib-ollama)
 - [Local AI Helper](https://github.com/ivostoykov/localAI) (Chrome and Firefox extensions that enable interactions with the active tab and customisable API endpoints. Includes secure storage for user prompts.)
 - [vnc-lm](https://github.com/jake83741/vnc-lm) (Discord bot for messaging with LLMs through Ollama and LiteLLM. Seamlessly move between local and flagship models.)
@@ -591,21 +558,405 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Alfred Ollama](https://github.com/zeitlings/alfred-ollama) (Alfred Workflow)
 - [TextLLaMA](https://github.com/adarshM84/TextLLaMA) A Chrome Extension that helps you write emails, correct grammar, and translate into any language
 - [Simple-Discord-AI](https://github.com/zyphixor/simple-discord-ai)
-- [LLM Telegram Bot](https://github.com/innightwolfsleep/llm_telegram_bot) (telegram bot, primary for RP. Oobabooga-like buttons, [A1111](https://github.com/AUTOMATIC1111/stable-diffusion-webui) API integration e.t.c)
-- [mcp-llm](https://github.com/sammcj/mcp-llm) (MCP Server to allow LLMs to call other LLMs)
-- [SimpleOllamaUnity](https://github.com/HardCodeDev777/SimpleOllamaUnity) (Unity Engine extension for communicating with Ollama in a few lines of code. Also works at runtime)
-- [UnityCodeLama](https://github.com/HardCodeDev777/UnityCodeLama) (Unity Edtior tool to analyze scripts via Ollama)
-- [NativeMind](https://github.com/NativeMindBrowser/NativeMindExtension) (Private, on-device AI Assistant, no cloud dependencies)
-- [GMAI - Gradle Managed AI](https://gmai.premex.se/) (Gradle plugin for automated Ollama lifecycle management during build phases)
 
 ### Supported backends
 
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) project founded by Georgi Gerganov.
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) project founded by Georgi Gerganov.
 
 ### Observability
-- [Opik](https://www.comet.com/docs/opik/cookbook/ollama) is an open-source platform to debug, evaluate, and monitor your LLM applications, RAG systems, and agentic workflows with comprehensive tracing, automated evaluations, and production-ready dashboards. Opik supports native intergration to Ollama.
 - [Lunary](https://lunary.ai/docs/integrations/ollama) is the leading open-source LLM observability platform. It provides a variety of enterprise-grade features such as real-time analytics, prompt templates management, PII masking, and comprehensive agent tracing.
 - [OpenLIT](https://github.com/openlit/openlit) is an OpenTelemetry-native tool for monitoring Ollama Applications & GPUs using traces and metrics.
 - [HoneyHive](https://docs.honeyhive.ai/integrations/ollama) is an AI observability and evaluation platform for AI agents. Use HoneyHive to evaluate agent performance, interrogate failures, and monitor quality in production.
 - [Langfuse](https://langfuse.com/docs/integrations/ollama) is an open source LLM observability platform that enables teams to collaboratively monitor, evaluate and debug AI applications.
 - [MLflow Tracing](https://mlflow.org/docs/latest/llms/tracing/index.html#automatic-tracing) is an open source LLM observability tool with a convenient API to log and visualize traces, making it easy to debug and evaluate GenAI applications.
+
+  </ul>
+</details>
+
+# Ollama-ov
+
+Getting started with large language models and using the [GenAI](https://github.com/openvinotoolkit/openvino.genai) backend.
+
+<div style="text-align:center;">
+  <img src="./images/ollama_openvino_new.gif" alt="Ollama-OV" width="900" height="400">
+</div>
+
+<div style="text-align:center;">
+  <img src="./images/ollama_vlm_test.gif" alt="Ollama-OV" width="900" height="600">
+</div>
+
+
+## Model library (VLM)
+The native Ollama only supports models in the GGUF format, the Ollama-OV invoke OpenVINO GenAI which requires models in the OpenVINO format. Therefore, we have enabled support for OpenVINO model files in Ollama. For public VLMs, you can access and download OpenVINO IR model from HuggingFace or ModelScope:
+| Model              | Parameters | Size  |Compression | Download                         | Device   |
+| ------------------ | ---------- | ----- | -----------|-------------------- |----------|
+| Qwen2.5-VL-3B-Instruct-int4-ov | 3B | 2.5GB | INT4_ASYM_128  ratio 1.0 | [ModelScope](https://www.modelscope.cn/models/zhaohb/Qwen2.5-VL-3B-Instruct-int4-ov/summary) | CPU, GPU, NPU(base) |
+
+## Model library (LLM)
+
+| Model              | Parameters | Size  |Compression | Download                         | Device   |
+| ------------------ | ---------- | ----- | -----------|-------------------- |----------|
+| Qwen3-0.6B-int4-ov | 0.6B | 0.4GB | INT4_ASYM_128  ratio 0.8 | [ModelScope](https://www.modelscope.cn/models/OpenVINO/Qwen3-1.7B-int4-ov/summary) | CPU, GPU, NPU(base) |
+| Qwen3-1.7B-int4-ov | 1.7B | 1.2GB | INT4_ASYM_128  ratio 0.8 | [ModelScope](https://www.modelscope.cn/models/OpenVINO/Qwen3-1.7B-int4-ov/) | CPU, GPU, NPU(base) |
+| Qwen3-4B-int4-ov   | 4B   | 2.6GB | INT4_ASYM_128  ratio 0.8 | [ModelScope](https://www.modelscope.cn/models/OpenVINO/Qwen3-4B-int4-ov) | CPU, GPU, NPU(base) |
+| Qwen3-1.7B-int4-sym-ov-npu | 1.7B | 1.0GB | INT4_SYM_CW | [ModelScope](https://modelscope.cn/models/zhaohb/Qwen3-1.7B-int4-sym-ov-npu) | NPU(best) |
+| Qwen3-4B-int4-sym-ov-npu | 4B | 2.0GB | INT4_SYM_CW | [ModelScope](https://modelscope.cn/models/zhaohb/Qwen3-4B-int4-sym-ov-npu) | NPU(best) |
+| Qwen3-8B-int4-sym-ov-npu   | 8B   | 4.5GB | INT4_SYM_CW | [ModelScope](https://modelscope.cn/models/zhaohb/Qwen3-8B-int4-sym-ov-npu) | NPU(best) |
+| DeepSeek-R1-Distill-Qwen-1.5B-int4-ov     | 1.5B    | 1.4GB | INT4_ASYM_32 | [ModelScope](https://modelscope.cn/models/zhaohb/DeepSeek-R1-Distill-Qwen-1.5B-int4-gs-32-ov)    | CPU, GPU, NPU(base) |
+| DeepSeek-R1-Distill-Qwen-1.5B-int4-ov-npu | 1.5B    | 1.1GB | INT4_SYM_CW  | [ModelScope](https://modelscope.cn/models/zhaohb/DeepSeek-R1-Distill-Qwen-1.5B-int4-ov-npu/summary)    | NPU(best) |
+| DeepSeek-R1-Distill-Qwen-7B-int4-ov       | 7B      | 4.3GB | INT4_SYM_128 | [ModelScope](https://modelscope.cn/models/zhaohb/DeepSeek-R1-Distill-Qwen-7B-int4-ov)    | CPU, GPU, NPU(base) |
+| DeepSeek-R1-Distill-Qwen-7B-int4-ov-npu   | 7B      | 4.1GB | INT4_SYM_CW  | [ModelScope](https://modelscope.cn/models/zhaohb/DeepSeek-R1-Distill-Qwen-7B-int4-ov-npu)    | NPU(best) |
+| DeepSeek-R1-Distill-Qwen-14B-int4-ov      | 14B     | 8.0GB | INT4_SYM_128 | [ModelScope](https://modelscope.cn/models/zhaohb/DeepSeek-R1-Distill-Qwen-14B-int4-ov)    | CPU, GPU, NPU(base) |
+| DeepSeek-R1-Distill-llama-8B-int4-ov      | 8B      | 4.5GB | INT4_SYM_128 | [ModelScope](https://modelscope.cn/models/zhaohb/DeepSeek-R1-Distill-Llama-8B-int4-ov)    | CPU, GPU, NPU(base) |
+| DeepSeek-R1-Distill-llama-8B-int4-ov-npu  | 8B      | 4.2GB | INT4_SYM_CW  | [ModelScope](https://modelscope.cn/models/zhaohb/DeepSeek-R1-Distill-Llama-8B-int4-ov-npu)    | NPU(best) |
+| llama-3.2-1b-instruct-int4-ov             | 1B      | 0.8GB | INT4_SYM_128 | [ModelScope](https://modelscope.cn/models/FionaZhao/llama-3.2-1b-instruct-int4-ov/files)    | CPU, GPU, NPU(base) |
+| llama-3.2-3b-instruct-int4-ov             | 3B      | 1.9GB | INT4_SYM_128 | [ModelScope](https://modelscope.cn/models/FionaZhao/llama-3.2-3b-instruct-int4-ov/files)    | CPU, GPU, NPU(base) |
+| llama-3.2-3b-instruct-int4-ov-npu         | 3B      | 1.8GB  | INT4_SYM_CW | [ModelScope](https://modelscope.cn/models/FionaZhao/llama-3.2-3b-instruct-int4-ov-npu/files)    | NPU(best) |
+| Phi-3.5-mini-instruct-int4-ov             | 3.8B    | 2.1GB | INT4_ASYM    | [HF](https://hf-mirror.com/OpenVINO/Phi-3.5-mini-instruct-int4-ov/tree/main), [ModelScope](https://modelscope.cn/models/OpenVINO/Phi-3.5-mini-instruct-int4-ov)        | CPU, GPU |
+| Phi-3-mini-128k-instruct-int4-ov          | 3.8B    | 2.5GB | INT4_ASYM    | [HF](https://hf-mirror.com/OpenVINO/Phi-3-mini-128k-instruct-int4-ov), [ModelScope](https://modelscope.cn/models/OpenVINO/Phi-3-mini-128k-instruct-int4-ov)     | CPU, GPU |
+| Phi-3-mini-4k-instruct-int4-ov            | 3.8B    | 2.2GB | INT4_ASYM    | [HF](https://hf-mirror.com/OpenVINO/Phi-3-mini-4k-instruct-int4-ov), [ModelScope](https://modelscope.cn/models/OpenVINO/Phi-3-mini-4k-instruct-int4-ov)       | CPU, GPU |
+| Phi-3-medium-4k-instruct-int4-ov          | 14B     | 7.4GB | INT4_ASYM    | [HF](https://hf-mirror.com/OpenVINO/Phi-3-medium-4k-instruct-int4-ov), [ModelScope](https://modelscope.cn/models/OpenVINO/Phi-3-medium-4k-instruct-int4-ov)     | CPU, GPU |
+| Qwen2.5-0.5B-Instruct-openvino-ovms-int4  | 0.5B    | 0.3GB | INT4_SYM_128 | [ModelScope](https://modelscope.cn/models/kafufa/Qwen2.5-0.5B-Instruct-openvino-ovms-int4/summary) | CPU, GPU, NPU(base) |
+| Qwen2.5-1.5B-Instruct-int4-ov  | 1.5B    | 0.9GB | INT4_SYM_128 | [ModelScope](https://www.modelscope.cn/models/OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov/) | CPU, GPU, NPU(base) |
+| Qwen2.5-3B-Instruct-gptq-ov               | 3B      | 2.7GB | INT4_GPTQ    | [ModelScope](https://modelscope.cn/models/FionaZhao/Qwen2.5-3B-Instruct-gptq-ov/files) | CPU, GPU |
+| Qwen2.5-7B-Instruct-int4-ov               | 7B      | 4.3GB | INT4_ASYM    | [ModelScope](https://modelscope.cn/models/FionaZhao/Qwen2.5-7B-Instruct-int4-ov/files) | CPU, GPU |
+| minicpm-1b-sft-int4-ov                    | 1B      | 0.7GB | INT4_SYM     | [ModelScope](https://modelscope.cn/models/FionaZhao/minicpm-1b-sft-int4-ov/files) | CPU, GPU, NPU(base) |
+| gemma-2-9b-it-int4-ov                     | 9B      | 5.3GB | INT4_ASYM    | [HF](https://hf-mirror.com/OpenVINO/gemma-2-9b-it-int4-ov), [ModelScope](https://modelscope.cn/models/OpenVINO/gemma-2-9b-it-int4-ov/summary) | CPU, GPU |
+| gemma-3-1b-it-int4-ov                     | 1B      | 0.7G | INT4_SYM_128 | [ModelScope](https://modelscope.cn/models/zhaohb/gemma-3-1b-it-int4-ov/summary) | CPU, GPU |
+| TinyLlama-1.1B-Chat-v1.0-int4-ov          | 1.1B    | 0.6GB | INT4_ASYM    | [HF](https://hf-mirror.com/OpenVINO/TinyLlama-1.1B-Chat-v1.0-int4-ov), [ModelScope](https://modelscope.cn/models/OpenVINO/TinyLlama-1.1B-Chat-v1.0-int4-ov)     | CPU, GPU |
+
+* INT4_SYM_128: INT4 symmetric compression with NNCF, group size 128, all linear layer compressed. Similar to Q4_0 compression.
+* INT4_SYM_CW: INT4 symmetric compression with NNCF, channel wise compression for NPU best performance.
+* INT4_ASYM: INT4 asymmetric compression with NNCF, has better accuracy than symmetric, NPU not support asymmetric compression.
+* INT4_GPTQ: INT4 GPTQ compression by NNCF which aligned with Huggingface.
+
+Just provide above model link as example for part models, for other LLMs, you can check [OpenVINO GenAI model support list](https://github.com/openvinotoolkit/openvino.genai/blob/master/SUPPORTED_MODELS.md). If you have customized LLM, please follow [model conversion step of GenAI](https://github.com/openvinotoolkit/openvino.genai?tab=readme-ov-file#converting-and-compressing-text-generation-model-from-hugging-face-library). 
+
+<!-- ## Performance to reference
+| Model                   | Ollama-OV with GPU (Driver version：32.0.101.6042)    | Ollama-OV with NPU (Driver version：32.0.100.3104)  | Device
+|-------------------------|---------------|-----------------|-----------------|
+| DeepSeek-R1-Distill-Qwen-7B | 19.58 tokens/s | 11.73 tokens/s | Intel(R) Core(TM) Ultra 7 268V 2.20GHz + 32G MEM | -->
+
+
+
+## Ollama Model File
+We added two new parameters to Modelfile based on the original parameters:
+| Parameter  | Description | Value Type | Example Usage |
+| -------------- | ------------------------ | ---------- | -------------------- |
+| stop_id           | Sets the stop ids to use                                     | int     | stop_id 151643 |
+| max_new_token          | The maximum number of tokens generated by genai (Default: 2048)    | int        | max_new_token 4096          
+
+## Quick start
+
+### Start Ollama
+
+1. First, set GODEBUG=cgocheck=0 env:
+
+   #### Linux
+   ```shell
+   export GODEBUG=cgocheck=0
+   ```
+
+   #### Windows 
+   ```shell
+   set GODEBUG=cgocheck=0
+   ```
+
+2. Next, `ollama serve` is used when you want to start ollama (you must use the Ollama compiled by ollama_ov to start the serve):
+
+   ```shell
+   ollama serve
+   ```
+
+### Import from openVINO IR
+How to create an Ollama model based on Openvino IR
+
+<div align="center">
+  <img src="./images/ollama_create.png" alt="How to create an Ollama model based on Openvino IR" width="400" height="400">
+</div>
+
+#### Example
+Let's take [deepseek-ai/DeepSeek-R1-Distill-Qwen-7B](https://hf-mirror.com/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B) as an example.
+
+1. Download the OpenVINO model 
+   1. Download from ModelScope: [DeepSeek-R1-Distill-Qwen-7B-int4-ov](https://modelscope.cn/models/zhaohb/DeepSeek-R1-Distill-Qwen-7B-int4-ov)
+      ```shell
+      pip install modelscope
+      modelscope download --model zhaohb/DeepSeek-R1-Distill-Qwen-7B-int4-ov --local_dir ./DeepSeek-R1-Distill-Qwen-7B-int4-ov
+      ```
+   
+   2. If the OpenVINO model exists in HF, we can also download it from HF. Here we take [TinyLlama-1.1B-Chat-v1.0-int4-ov](https://huggingface.co/OpenVINO/TinyLlama-1.1B-Chat-v1.0-int4-ov) as an example to introduce how to download the model from HF.
+
+      If your network access to HuggingFace is unstable, you can try to use a proxy image to pull the model.
+      ```shell
+      set HF_ENDPOINT=https://hf-mirror.com
+      ```
+      ```
+      pip install -U huggingface_hub
+      huggingface-cli download --resume-download OpenVINO/TinyLlama-1.1B-Chat-v1.0-int4-ov  --local-dir  TinyLlama-1.1B-Chat-v1.0-int4-ov --local-dir-use-symlinks False
+      ```
+
+
+2. Package OpenVINO IR into a tar.gz file. [Qwen2.5-VL-3B-Instruct-int4-ov link](https://www.modelscope.cn/models/zhaohb/Qwen2.5-VL-3B-Instruct-int4-ov)
+    ```bash
+    tar -zcvf Qwen2.5-VL-3B-Instruct.tar.gz Qwen2.5-VL-3B-Instruct-int4-ov
+    ```
+
+3. Create a file named `Modelfile`, with a `FROM` instruction with the local filepath to the model you want to import.
+   For convenience, we have put the model file of DeepSeek-R1-Distill-Qwen-7B-int4-ov model under example dir: [Modelfile for DeepSeek](https://github.com/openvinotoolkit/openvino_contrib/blob/master/modules/ollama_openvino/examples/modelfile/deepseek_r1_distill_qwen/Modelfile), we can use it directly.
+
+   Note:
+
+   1. The `ModelBackend "OpenVINO"` parameter is mandatory and must be explicitly set.
+   2. The `ModelType "<VLM/LLM>"` parameter indicates the model type—either VLM (Vision-Language Model) or LLM (Large Language Model)—and the appropriate runner is selected based on this parameter. 
+   3. The `InferDevice` parameter is optional:
+      - If not specified, the system will prioritize using the GPU by default. If no GPU is available, it will automatically fall back to using the CPU. If InferDevice is explicitly set, the system will strictly use the specified device. If the specified device is unavailable, the system will follow the same fallback strategy as when InferDevice is not set (i.e., GPU first, then CPU).
+      - If there are multiple GPUs in the environment, you can specify which GPU device to use by indicating GPU:<id>. For example, GPU:0 or GPU:1.
+      
+4. Unzip OpenVINO GenAI package and set environment.[openvino_genai_windows_2025.4.0.0.dev20251103_x86_64](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/nightly/2025.4.0.0.dev20251103/openvino_genai_windows_2025.4.0.0.dev20251103_x86_64.zip)
+   ```shell
+   cd openvino_genai_windows_2025.4.0.0.dev20251103_x86_64
+   setupvars.bat
+   ```
+
+5. Create the model in Ollama
+
+    1. LLM
+      a. create Modelfile
+          ```shell
+          cat Modelfile
+          ```
+          ```shell
+            FROM  Qwen3-4B-int4-asym-ov.tar.gz
+            ModelBackend "OpenVINO"
+            ModelType "LLM"
+            InferDevice "GPU"
+            PARAMETER repeat_penalty 1.0
+            PARAMETER top_p 1.0
+            PARAMETER temperature 1.0
+          ```
+      b. Create an Ollama model from a Modelfile.
+          ```shell
+          ollama create Qwen3-4B-int4-asym-ov:v1 -f Modelfile
+          ```
+      c. Run the model
+         ```shell
+          ollama run Qwen3-4B-int4-asym-ov:v1
+          ```
+    2. VLM
+      a. create Modelfile
+          ```shell
+          cat Modelfile
+          ```
+          ```shell
+            FROM  Qwen2.5-VL-3B-Instruct.tar.gz
+            ModelBackend "OpenVINO"
+            ModelType "VLM"
+            InferDevice "GPU"
+            PARAMETER repeat_penalty 1.0
+            PARAMETER top_p 1.0
+            PARAMETER temperature 1.0
+          ```
+      b. Create an Ollama model from a Modelfile.
+          ```shell
+          ollama create Qwen2.5-VL-3B-Instruct:v1 -f Modelfile
+          ```
+      c. Run the model
+         ```shell
+          ollama run Qwen2.5-VL-3B-Instruct:v1
+         ```               
+
+
+
+### Import from GGUF file（Experimental feature, not recommended for production use.）
+
+| GGUF              | Model Link | GGUF Size  |Precision | Status   | Device   |
+| ------------------ | ---------- | ----- | -----------|-------------------- |----------|
+| DeepSeek-R1-Distill-Qwen-1.5B-GGUF | [HuggingFace](https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF), [ModelScope](https://modelscope.cn/models/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF) | 1.12GB | Q4_K_M | ✔️ | CPU, GPU |
+| DeepSeek-R1-Distill-Qwen-7B-GGUF | [HuggingFace](https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF), [ModelScope](https://modelscope.cn/models/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF) | 4.68GB | Q4_K_M | ✔️ | CPU, GPU |
+| Qwen2.5-1.5B-Instruct-GGUF | [HuggingFace](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF), [ModelScope](https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF) | 1.12GB | Q4_K_M | ✔️ | CPU, GPU |
+| Qwen2.5-3B-Instruct-GGUF | [HuggingFace](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF), [ModelScope](https://modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF) | 2.1GB | Q4_K_M | ✔️ | CPU, GPU |
+| Qwen2.5-7B-Instruct-GGUF | [HuggingFace](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF), [ModelScope](https://modelscope.cn/models/Qwen/Qwen2.5-7B-Instruct-GGUF) | 4.68GB | Q4_K_M | ✔️ | CPU, GPU |
+| llama-3.2-1b-instruct-GGUF | [HuggingFace](https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF), [ModelScope](https://modelscope.cn/models/unsloth/Llama-3.2-1B-Instruct-GGUF) | 0.75GB | Q4_K_M | ✔️ | CPU, GPU |
+| llama-3.2-3b-instruct-GGUF | [HuggingFace](https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF), [ModelScope](https://modelscope.cn/models/unsloth/Llama-3.2-3B-Instruct-GGUF) | 2.02GB | Q4_K_M | ✔️ | CPU, GPU |
+| llama-3.1-8b-instruct-GGUF | [HuggingFace](https://huggingface.co/modularai/Llama-3.1-8B-Instruct-GGUF) | 4.92GB | Q4_K_M | ✔️ | CPU, GPU |
+
+#### Example
+Using the qwen2.5-3b-instruct-q4_k_m.gguf model as an example：
+1. the corresponding Modelfile is as follows
+   ```shell
+   FROM  qwen2.5-3b-instruct-q4_k_m.gguf
+   ModelBackend "OpenVINO"
+   ModelType "LLM"
+   InferDevice "GPU"
+   PARAMETER stop "<|im_end|>"
+   PARAMETER repeat_penalty 1.0
+   PARAMETER top_p 1.0
+   PARAMETER temperature 1.0
+   ```
+2. Create the model in Ollama
+
+   ```shell
+   ollama create qwen2.5-3b-gguf-ov-gpu:v1 -f Modelfile
+   ```
+
+3. Run the model                     
+
+   ```shell
+   ollama run qwen2.5-3b-gguf-ov-gpu:v1
+   ```
+Reference link: [openvino-genai-supports-gguf-models](https://blog.openvino.ai/blog-posts/openvino-genai-supports-gguf-models)
+
+## CLI Reference
+
+### Show model information
+
+```shell
+ollama show Qwen2.5-VL-3B-Instruct:v1 
+```
+
+### List models on your computer
+
+```shell
+ollama list
+```
+
+### List which models are currently loaded
+
+```shell
+ollama ps
+```
+
+### Stop a model which is currently running
+
+```shell
+ollama stop Qwen2.5-VL-3B-Instruct:v1 
+```
+
+## Building from source
+
+Install prerequisites:
+
+- [Go](https://go.dev/doc/install)
+- C/C++ Compiler e.g. Clang on macOS, [TDM-GCC](https://github.com/jmeubank/tdm-gcc/releases/latest) (Windows amd64) or [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Windows arm64), GCC/Clang on Linux.
+
+Then build and run Ollama from the root directory of the repository:
+
+### Windows
+
+1. clone repo
+   ```shell
+   git lfs install
+   git clone https://github.com/openvinotoolkit/openvino_contrib.git
+   cd openvino_contrib/modules/ollama_openvino
+   ```
+
+2. Enable CGO:
+   ```shell
+   go env -w CGO_ENABLED=1
+   ```
+
+3. Initialize the GenAI environment
+
+   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/nightly/2025.4.0.0.dev20251103/openvino_genai_windows_2025.4.0.0.dev20251103_x86_64.zip), then extract it to a directory openvino_genai_windows_2025.4.0.0.dev20251103_x86_64.
+   ```shell
+   cd openvino_genai_windows_2025.4.0.0.dev20251103_x86_64
+   setupvars.bat
+   ```
+  
+4. Setting cgo environment variables
+   ```shell
+   set CGO_LDFLAGS=-L%OpenVINO_DIR%\..\lib\intel64\Release
+   set CGO_CFLAGS=-I%OpenVINO_DIR%\..\include 
+   ```
+
+5. building Ollama
+   ```shell
+   go build -o ollama.exe
+   ```
+
+6. If you don't want to recompile ollama, you can choose to directly use the compiled executable file, and then initialize the genai environment in `step 3` to run ollama directly.
+   
+   But if you encounter the error when executing ollama.exe, it is recommended that you recompile from source code.
+   ```shell
+   This version of ollama.exe is not compatible with the version of Windows you're running. Check your computer's system information and then contact the software publisher.'
+   ```
+
+### Linux
+1. clone repo
+   ```shell
+   git lfs install
+   git clone https://github.com/openvinotoolkit/openvino_contrib.git
+   cd openvino_contrib/modules/ollama_openvino
+   ```
+
+2. Enable CGO:
+   ```shell
+   go env -w CGO_ENABLED=1
+   ```
+
+3. Initialize the GenAI environment
+
+   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/nightly/2025.4.0.0.dev20251103/openvino_genai_ubuntu22_2025.4.0.0.dev20251103_x86_64.tar.gz), then extract it to a directory openvino_genai_ubuntu22_2025.4.0.0.dev20251103_x86_64.
+   ```shell
+   cd openvino_genai_ubuntu22_2025.4.0.0.dev20251103_x86_64
+   source setupvars.sh
+   ```
+  
+4. Setting cgo environment variables
+   ```shell
+   export CGO_LDFLAGS=-L$OpenVINO_DIR/../lib/intel64/
+   export CGO_CFLAGS=-I$OpenVINO_DIR/../include
+   ```
+
+5. building Ollama
+   ```shell
+   go build -o ollama
+   ```
+
+
+### Running local builds
+
+1. First, set GODEBUG=cgocheck=0 env:
+
+   #### Linux
+   ```shell
+   export GODEBUG=cgocheck=0
+   ```
+
+   #### Windows 
+   ```shell
+   set GODEBUG=cgocheck=0
+   ```
+
+2. Next, start the server:
+
+   ```shell
+   ollama serve
+   ```
+
+3. Finally, in a separate shell, run a model:
+
+   ```shell
+   ollama run Qwen2.5-VL-3B-Instruct:v1
+   ```
+
+## Community Integrations
+### Terminal
+
+- [oterm](https://github.com/ggozad/oterm)
+   <div style="text-align:center;">
+      <img src="./images/oterm_demo.gif" alt="Ollama-OV" width="900" height="400">
+   </div>
+
+### Web & Desktop
+
+- [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm)
+   <div style="text-align:center;">
+      <img src="./images/ollama_ov_anythingllm.gif" alt="Ollama-OV" width="900" height="400">
+   </div>
+
+## Future Development Plan
+Here are some features and improvements planned for future releases:
+   
+1. **Multimodal models**: Support for multimodal models that can process both text and image data.
