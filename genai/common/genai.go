@@ -267,6 +267,10 @@ func PrintGenaiMetrics(metrics *C.ov_genai_perf_metrics) {
 	C.ov_genai_perf_metrics_get_num_generation_tokens(metrics, &num_generation_tokens)
 	log.Printf("Num of generation tokens: %d\n", num_generation_tokens)
 
+	var num_input_tokens C.size_t
+	C.ov_genai_perf_metrics_get_num_input_tokens(metrics, &num_input_tokens)
+	log.Printf("Num of input tokens: %d\n", num_input_tokens)
+
 	var tput_mean C.float
 	var tput_std C.float
 	C.ov_genai_perf_metrics_get_throughput(metrics, &tput_mean, &tput_std)
