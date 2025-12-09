@@ -964,6 +964,11 @@ Then build and run Ollama from the root directory of the repository:
       <img src="./images/ollama_ov_anythingllm.gif" alt="Ollama-OV" width="900" height="400">
    </div>
 
+- [open-webui](https://github.com/open-webui/open-webui)
+   <div style="text-align:center;">
+      <img src="./images/ollama_openweb_ui.gif" alt="Ollama-OV" width="900" height="400">
+   </div>
+
 ## Future Development Plan
 Here are some features and improvements planned for future releases:
    
