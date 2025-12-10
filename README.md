@@ -597,6 +597,7 @@ The native Ollama only supports models in the GGUF format, the Ollama-OV invoke 
 | Model              | Parameters | Size  |Compression | Download                         | Device   |
 | ------------------ | ---------- | ----- | -----------|-------------------- |----------|
 | Qwen2.5-VL-3B-Instruct-int4-ov | 3B | 2.5GB | INT4_ASYM_128  ratio 1.0 | [ModelScope](https://www.modelscope.cn/models/zhaohb/Qwen2.5-VL-3B-Instruct-int4-ov/summary) | CPU, GPU, NPU(base) |
+| gemma-3-4b-it-ov-int4 | 4B | 3.5GB | INT4_ASYM_128  ratio 1.0 | [HuggingFace](https://huggingface.co/yangsu0423/gemma-3-4b-it-ov-int4) | CPU, GPU, NPU(base) |
 
 ## Model library (LLM)
 
