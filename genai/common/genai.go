@@ -59,6 +59,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/cgo"
 	"strconv"
 	"unsafe"
 
@@ -338,7 +339,11 @@ func GenerateTextWithMetrics(pipeline *C.ov_genai_llm_pipeline, input string, sa
 	var streamer_callback C.streamer_callback
 	streamer_callback.callback_func = (C.callback_function)(unsafe.Pointer(C.goCallbackBridge))
 
-	streamer_callback.args = unsafe.Pointer(seq)
+	// streamer_callback.args = unsafe.Pointer(seq)
+	// Use cgo.Handle to safely pass Go pointer through C without violating cgo rules.
+	handle := cgo.NewHandle(seq)
+	defer handle.Delete()
+	streamer_callback.args = unsafe.Pointer(uintptr(handle))
 
 	C.ov_genai_llm_pipeline_start_chat(pipeline)
 	C.ov_genai_llm_pipeline_generate(pipeline, cInput, (*C.ov_genai_generation_config)(cConfig), &streamer_callback, &result)
@@ -476,7 +481,10 @@ func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string,
 	var streamer_callback C.streamer_callback
 	streamer_callback.callback_func = (C.callback_function)(unsafe.Pointer(C.goCallbackBridge))
 
-	streamer_callback.args = unsafe.Pointer(seq)
+	// Use cgo.Handle to safely pass Go pointer through C without violating cgo rules.
+	handle := cgo.NewHandle(seq)
+	defer handle.Delete()
+	streamer_callback.args = unsafe.Pointer(uintptr(handle))
 
 	var rgbs []*C.ov_tensor_t
 	for i, imageData := range images {
@@ -623,7 +631,9 @@ func GetOvVersion() {
 func goCallbackBridge(args *C.char, gen_result unsafe.Pointer) C.int {
 	if args != nil {
 		// 将 unsafe.Pointer 转换回结构体指针
-		result := (*Sequence)(gen_result)
+		// result := (*Sequence)(gen_result)
+		handle := cgo.Handle(uintptr(gen_result))
+		result := handle.Value().(*Sequence)
 
 		// 将 C 字符串转换为 Go 字符串并追加到切片中
 		goStr := C.GoString(args)

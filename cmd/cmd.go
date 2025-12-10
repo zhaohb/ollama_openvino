@@ -318,7 +318,7 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 		Options:  map[string]any{},
 	}
 
-	log.Printf("Initial opts: %+v", opts)
+	// log.Printf("Initial opts: %+v", opts)
 
 	format, err := cmd.Flags().GetString("format")
 	if err != nil {
@@ -442,7 +442,7 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 	opts.InferDevice = info.InferDevice
 	opts.ModelBackend = info.ModelBackend
 
-	log.Printf("Initial opts: %+v", opts)
+	// log.Printf("Initial opts: %+v", opts)
 
 	if interactive {
 		if err := loadOrUnloadModel(cmd, &opts); err != nil {
