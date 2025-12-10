@@ -585,6 +585,12 @@ Getting started with large language models and using the [GenAI](https://github.
   <img src="./images/ollama_vlm_test.gif" alt="Ollama-OV" width="900" height="600">
 </div>
 
+## Google Drive Download Links
+
+### Windows
+
+- [ollama.exe Download](https://drive.google.com/file/d/1ArtjRT2CmZoUWEps0NGkXWXR311RbrXl/view?usp=sharing)
+- [OpenVINO GenAI Download](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/windows/openvino_genai_windows_2025.4.0.0_x86_64.zip)
 
 ## Model library (VLM)
 The native Ollama only supports models in the GGUF format, the Ollama-OV invoke OpenVINO GenAI which requires models in the OpenVINO format. Therefore, we have enabled support for OpenVINO model files in Ollama. For public VLMs, you can access and download OpenVINO IR model from HuggingFace or ModelScope:
@@ -713,9 +719,9 @@ Let's take [deepseek-ai/DeepSeek-R1-Distill-Qwen-7B](https://hf-mirror.com/deeps
       - If not specified, the system will prioritize using the GPU by default. If no GPU is available, it will automatically fall back to using the CPU. If InferDevice is explicitly set, the system will strictly use the specified device. If the specified device is unavailable, the system will follow the same fallback strategy as when InferDevice is not set (i.e., GPU first, then CPU).
       - If there are multiple GPUs in the environment, you can specify which GPU device to use by indicating GPU:<id>. For example, GPU:0 or GPU:1.
       
-4. Unzip OpenVINO GenAI package and set environment.[openvino_genai_windows_2025.4.0.0.dev20251103_x86_64](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/nightly/2025.4.0.0.dev20251103/openvino_genai_windows_2025.4.0.0.dev20251103_x86_64.zip)
+4. Unzip OpenVINO GenAI package and set environment.[openvino_genai_windows_2025.4.0.0_x86_64](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/windows/openvino_genai_windows_2025.4.0.0_x86_64.zip)
    ```shell
-   cd openvino_genai_windows_2025.4.0.0.dev20251103_x86_64
+   cd openvino_genai_windows_2025.4.0.0_x86_64
    setupvars.bat
    ```
 
@@ -866,9 +872,9 @@ Then build and run Ollama from the root directory of the repository:
 
 3. Initialize the GenAI environment
 
-   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/nightly/2025.4.0.0.dev20251103/openvino_genai_windows_2025.4.0.0.dev20251103_x86_64.zip), then extract it to a directory openvino_genai_windows_2025.4.0.0.dev20251103_x86_64.
+   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/windows/openvino_genai_windows_2025.4.0.0_x86_64.zip), then extract it to a directory openvino_genai_windows_2025.4.0.0_x86_64.
    ```shell
-   cd openvino_genai_windows_2025.4.0.0.dev20251103_x86_64
+   cd openvino_genai_windows_2025.4.0.0_x86_64
    setupvars.bat
    ```
   
@@ -905,9 +911,9 @@ Then build and run Ollama from the root directory of the repository:
 
 3. Initialize the GenAI environment
 
-   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/nightly/2025.4.0.0.dev20251103/openvino_genai_ubuntu22_2025.4.0.0.dev20251103_x86_64.tar.gz), then extract it to a directory openvino_genai_ubuntu22_2025.4.0.0.dev20251103_x86_64.
+   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/linux/openvino_genai_ubuntu22_2025.4.0.0_x86_64.tar.gz), then extract it to a directory openvino_genai_ubuntu22_2025.4.0.0_x86_64.
    ```shell
-   cd openvino_genai_ubuntu22_2025.4.0.0.dev20251103_x86_64
+   cd openvino_genai_ubuntu22_2025.4.0.0_x86_64
    source setupvars.sh
    ```
   
