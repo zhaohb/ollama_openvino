@@ -1,10 +1,14 @@
 package common
 
 import (
+	"encoding/json"
+	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/alpkeskin/gotoon"
 	llamaserver "github.com/ollama/ollama/llm/llama"
 )
 
@@ -181,4 +185,151 @@ func (s *Sequence) GetStartProcessingTime() time.Time {
 
 func (s *Sequence) GetNumDecoded() int {
 	return s.numDecoded
+}
+
+// JSONMatch represents a detected JSON structure with its position
+type JSONMatch struct {
+	Content string // The JSON content
+	Start   int    // Start position in the text
+	End     int    // End position in the text (inclusive)
+}
+
+// ExtractJSON extracts all JSON structures from text and returns them with positions
+func ExtractJSON(text string) []JSONMatch {
+	// Quick check: if text doesn't contain { or [, it can't have JSON
+	if !strings.Contains(text, "{") && !strings.Contains(text, "[") {
+		return nil
+	}
+
+	// Find and validate JSON structures
+	return findAndValidateJSON(text)
+}
+
+// ConvertJSONToTOON converts JSON matches to TOON format and replaces them in the prompt
+func ConvertJSONToTOON(prompt string, jsonMatches []JSONMatch) string {
+	if len(jsonMatches) == 0 {
+		return prompt
+	}
+
+	// Process matches in reverse order to maintain correct indices
+	result := prompt
+	for i := len(jsonMatches) - 1; i >= 0; i-- {
+		match := jsonMatches[i]
+
+		// Parse JSON
+		var jsonData interface{}
+		if err := json.Unmarshal([]byte(match.Content), &jsonData); err != nil {
+			log.Printf("Failed to parse JSON at [%d:%d]: %v", match.Start, match.End, err)
+			continue
+		}
+
+		// Convert to TOON
+		toonStr, err := gotoon.Encode(jsonData)
+		if err != nil {
+			log.Printf("Failed to encode JSON to TOON at [%d:%d]: %v", match.Start, match.End, err)
+			continue
+		}
+
+		// Wrap TOON in code block with format description
+		toonBlock := fmt.Sprintf("Data is TOON format (2-space indent, arrays show length and fields)\n```toon\n%s\n```", toonStr)
+
+		// Replace JSON with TOON block in the prompt
+		result = result[:match.Start] + toonBlock + result[match.End+1:]
+
+		log.Printf("Converted JSON[%d] at [%d:%d] to TOON format", i, match.Start, match.End)
+	}
+
+	return result
+}
+
+// findAndValidateJSON finds all JSON structures in text and validates them
+func findAndValidateJSON(text string) []JSONMatch {
+	var matches []JSONMatch
+
+	// Find all potential JSON matches by looking for { or [
+	for i := 0; i < len(text); i++ {
+		if text[i] == '{' {
+			end := findMatchingBrace(text, i, '{', '}')
+			if end > i {
+				jsonStr := text[i : end+1]
+				if isValidJSON(jsonStr) {
+					matches = append(matches, JSONMatch{
+						Content: jsonStr,
+						Start:   i,
+						End:     end,
+					})
+					// Skip past this JSON to avoid overlapping matches
+					i = end
+					continue
+				}
+			}
+		} else if text[i] == '[' {
+			end := findMatchingBrace(text, i, '[', ']')
+			if end > i {
+				jsonStr := text[i : end+1]
+				if isValidJSON(jsonStr) {
+					matches = append(matches, JSONMatch{
+						Content: jsonStr,
+						Start:   i,
+						End:     end,
+					})
+					// Skip past this JSON to avoid overlapping matches
+					i = end
+					continue
+				}
+			}
+		}
+	}
+	return matches
+}
+
+// findMatchingBrace finds the matching closing brace/bracket
+func findMatchingBrace(text string, start int, open, close byte) int {
+	if start >= len(text) || text[start] != open {
+		return -1
+	}
+
+	depth := 1
+	inString := false
+	escape := false
+
+	for i := start + 1; i < len(text); i++ {
+		char := text[i]
+
+		if escape {
+			escape = false
+			continue
+		}
+
+		if char == '\\' {
+			escape = true
+			continue
+		}
+
+		if char == '"' {
+			inString = !inString
+			continue
+		}
+
+		if inString {
+			continue
+		}
+
+		if char == open {
+			depth++
+		} else if char == close {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+
+	return -1
+}
+
+// isValidJSON checks if a string is valid JSON
+func isValidJSON(s string) bool {
+	var js interface{}
+	return json.Unmarshal([]byte(s), &js) == nil
 }

@@ -956,6 +956,84 @@ Then build and run Ollama from the root directory of the repository:
    ollama run Qwen2.5-VL-3B-Instruct:v1
    ```
 
+## TOON Format Support (Experimental)
+
+This project includes experimental support for [TOON (Token-Oriented Object Notation)](https://github.com/toon-format/toon), a compact, human-readable format designed for LLM prompts. In scenarios with JSON data, converting to TOON format can significantly reduce input token counts, leading to improved Time To First Token (TTFT) performance.
+
+> **Note:** TOON conversion is **disabled by default**. Enable it via the `ENABLE_TOON_CONVERSION` environment variable.
+
+### Features
+
+- 🎯 **Token Reduction**
+- ⚡ **Performance**
+- 🔧 **Configurable**: Easy enable/disable via environment variable
+- 🔍 **Automatic Detection**: Automatically detects and converts JSON structures in prompts
+
+### Usage
+
+#### Enabling TOON Conversion
+
+**Windows (CMD):**
+```cmd
+set ENABLE_TOON_CONVERSION=true
+```
+
+#### Disabling TOON Conversion
+
+**Windows (CMD):**
+```cmd
+set ENABLE_TOON_CONVERSION=
+```
+
+### Testing
+
+A test script is provided to demonstrate TOON format conversion and compare performance metrics:
+
+```bash
+cd toon_test_scripts
+python test.py
+```
+
+**Performance with TOON enabled:**
+```
+time=2025-12-12T15:05:11.837+08:00 level=INFO source=genai.go:241 msg="Genai Metrics info:"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:245 msg="Load time: 4328.00"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:250 msg="Generate time: 54594.21 ± 0.00 ms"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:255 msg="Tokenization time: 4.81 ± 0.00 ms"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:260 msg="Detokenization time: 0.23 ± 0.00 ms"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:265 msg="TTFT: 2006.88 ± 0.00 ms"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:270 msg="TPOT: 35.44 ± 2.31 ms/token"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:274 msg="Num of generation tokens: 1500"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:278 msg="Num of input tokens: 4095"
+time=2025-12-12T15:05:11.838+08:00 level=INFO source=genai.go:283 msg="Throughput: 28.21 ± 1.84 tokens/s"
+```
+
+**Performance with TOON disabled:**
+```
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:241 msg="Genai Metrics info:"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:245 msg="Load time: 5271.00"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:250 msg="Generate time: 52376.58 ± 0.00 ms"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:255 msg="Tokenization time: 5.01 ± 0.00 ms"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:260 msg="Detokenization time: 0.28 ± 0.00 ms"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:265 msg="TTFT: 3253.89 ± 0.00 ms"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:270 msg="TPOT: 37.02 ± 1.78 ms/token"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:274 msg="Num of generation tokens: 1343"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:278 msg="Num of input tokens: 6036"
+time=2025-12-12T15:07:33.965+08:00 level=INFO source=genai.go:283 msg="Throughput: 27.01 ± 1.30 tokens/s"
+```
+
+### Performance Comparison
+
+The following table compares performance metrics with TOON conversion enabled vs. disabled:
+
+| Configuration | TTFT      | Input Tokens | Token Reduction | TTFT Improvement |
+|---------------|-----------|--------------|-----------------|------------------|
+| **TOON Enabled**  | 2,007 ms  | 4,096        | **32.1%**       | **38.3% faster** |
+| TOON Disabled | 3,254 ms  | 6,036        | Baseline              | Baseline         |
+
+The conversion preserves all data while significantly reducing token count, especially for structured data like arrays and nested objects.
+
+
 ## Community Integrations
 ### Terminal
 

@@ -156,8 +156,26 @@ func (s *Server) processBatch() error {
 
 		seq.SetStartGenerationTime(time.Now())
 		for _, input := range seq.GetInputs() {
-			log.Printf("gen prompt: %s", input.GetPrompt())
-			common.GenerateTextWithMetrics(s.model, input.GetPrompt(), seq.GetSamplingParameters(), seq)
+			prompt := input.GetPrompt()
+			log.Printf("gen prompt: %s", prompt)
+
+			// Check if TOON conversion is enabled via environment variable
+			if os.Getenv("ENABLE_TOON_CONVERSION") == "true" || os.Getenv("ENABLE_TOON_CONVERSION") == "1" {
+				// Check if prompt contains JSON data and convert to TOON
+				jsonMatches := common.ExtractJSON(prompt)
+				if len(jsonMatches) > 0 {
+					log.Printf("JSON data detected in prompt: found %d JSON structure(s)", len(jsonMatches))
+
+					// Convert JSON to TOON and replace in prompt
+					convertedPrompt := common.ConvertJSONToTOON(prompt, jsonMatches)
+					if convertedPrompt != prompt {
+						log.Printf("Prompt converted to TOON format")
+						prompt = convertedPrompt
+					}
+				}
+			}
+			log.Printf("gen prompt: %s", prompt)
+			common.GenerateTextWithMetrics(s.model, prompt, seq.GetSamplingParameters(), seq)
 			// log.Printf("gen result: ", seq.GetpendingResponses())
 		}
 		s.removeSequence(i, "")
