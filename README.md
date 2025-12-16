@@ -592,6 +592,33 @@ Getting started with large language models and using the [GenAI](https://github.
 - [ollama.exe Download](https://drive.google.com/file/d/1ArtjRT2CmZoUWEps0NGkXWXR311RbrXl/view?usp=sharing)
 - [OpenVINO GenAI Download](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/windows/openvino_genai_windows_2025.4.0.0_x86_64.zip)
 
+## Docker
+
+### Linux Docker
+
+We also prepared a Dockerfile to help developers quickly build Docker images [Dockerfile](./Dockerfile_genai_ubuntu24):
+
+```shell
+docker build -t ollama_openvino_ubuntu24:v1 -f Dockerfile_genai_ubuntu24 .
+```
+
+Then, start and enter the Docker container:
+
+```shell
+docker run -it --rm --device=/dev/dri:/dev/dri  --device=/dev/accel:/dev/accel --entrypoint /bin/bash ollama_openvino_ubuntu24:v1
+```
+
+> [!NOTE]
+> The `--device=/dev/dri:/dev/dri` mounts the iGPU/dGPU devices directory into the container.
+> The ` --device=/dev/accel:/dev/accel` mounts the NPU devices directory into the container.
+
+Execute the following commands inside the container:
+
+```shell
+source /home/ollama_ov_server/openvino_genai_ubuntu22_2025.3.0.0.dev20250630_x86_64/setupvars.sh
+ollama serve
+```
+
 ## Model library (VLM)
 The native Ollama only supports models in the GGUF format, the Ollama-OV invoke OpenVINO GenAI which requires models in the OpenVINO format. Therefore, we have enabled support for OpenVINO model files in Ollama. For public VLMs, you can access and download OpenVINO IR model from HuggingFace or ModelScope:
 | Model              | Parameters | Size  |Compression | Download                         | Device   |
