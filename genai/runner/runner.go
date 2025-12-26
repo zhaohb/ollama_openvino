@@ -75,6 +75,9 @@ type Server struct {
 	modelPath   string
 	modelName   string
 	inferDevice string
+
+	// cached TOON conversion enabled status (checked once at startup)
+	toonConversionEnabled bool
 }
 
 func (s *Server) allNil() bool {
@@ -157,24 +160,16 @@ func (s *Server) processBatch() error {
 		seq.SetStartGenerationTime(time.Now())
 		for _, input := range seq.GetInputs() {
 			prompt := input.GetPrompt()
-			log.Printf("gen prompt: %s", prompt)
 
-			// Check if TOON conversion is enabled via environment variable
-			if os.Getenv("ENABLE_TOON_CONVERSION") == "true" || os.Getenv("ENABLE_TOON_CONVERSION") == "1" {
+			// Check if TOON conversion is enabled (using cached value)
+			if s.toonConversionEnabled {
 				// Check if prompt contains JSON data and convert to TOON
 				jsonMatches := common.ExtractJSON(prompt)
 				if len(jsonMatches) > 0 {
-					log.Printf("JSON data detected in prompt: found %d JSON structure(s)", len(jsonMatches))
-
 					// Convert JSON to TOON and replace in prompt
-					convertedPrompt := common.ConvertJSONToTOON(prompt, jsonMatches)
-					if convertedPrompt != prompt {
-						log.Printf("Prompt converted to TOON format")
-						prompt = convertedPrompt
-					}
+					prompt = common.ConvertJSONToTOON(prompt, jsonMatches)
 				}
 			}
-			log.Printf("gen prompt: %s", prompt)
 			common.GenerateTextWithMetrics(s.model, prompt, seq.GetSamplingParameters(), seq)
 			// log.Printf("gen result: ", seq.GetpendingResponses())
 		}
@@ -582,9 +577,14 @@ func Execute(args []string) error {
 	slog.SetDefault(slog.New(handler))
 	slog.Info("starting go genairunner")
 
+	// Check TOON conversion environment variable once at startup
+	toonEnv := os.Getenv("ENABLE_TOON_CONVERSION")
+	toonEnabled := toonEnv == "true" || toonEnv == "1"
+
 	server := &Server{
-		seqs:   make([]*common.Sequence, *parallel),
-		status: ServerStatusLaunched,
+		seqs:                  make([]*common.Sequence, *parallel),
+		status:                ServerStatusLaunched,
+		toonConversionEnabled: toonEnabled,
 	}
 
 	// // If model parameters are provided via command line, load immediately

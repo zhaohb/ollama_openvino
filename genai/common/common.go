@@ -2,7 +2,6 @@ package common
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -189,102 +188,143 @@ func (s *Sequence) GetNumDecoded() int {
 
 // JSONMatch represents a detected JSON structure with its position
 type JSONMatch struct {
-	Content string // The JSON content
-	Start   int    // Start position in the text
-	End     int    // End position in the text (inclusive)
+	Content    string      // The JSON content
+	ParsedData interface{} // Parsed JSON data (cached to avoid re-parsing)
+	Start      int         // Start position in the text
+	End        int         // End position in the text (inclusive)
 }
 
 // ExtractJSON extracts all JSON structures from text and returns them with positions
+// Optimized: parses JSON during extraction to avoid re-parsing later
 func ExtractJSON(text string) []JSONMatch {
 	// Quick check: if text doesn't contain { or [, it can't have JSON
-	if !strings.Contains(text, "{") && !strings.Contains(text, "[") {
+	// Use byte-level check for better performance
+	hasJSON := false
+	for i := 0; i < len(text); i++ {
+		if text[i] == '{' || text[i] == '[' {
+			hasJSON = true
+			break
+		}
+	}
+	if !hasJSON {
 		return nil
 	}
 
-	// Find and validate JSON structures
+	// Find and validate JSON structures (with parsing)
 	return findAndValidateJSON(text)
 }
 
 // ConvertJSONToTOON converts JSON matches to TOON format and replaces them in the prompt
+// Optimized: uses pre-parsed JSON data and strings.Builder for efficient string building
 func ConvertJSONToTOON(prompt string, jsonMatches []JSONMatch) string {
 	if len(jsonMatches) == 0 {
 		return prompt
 	}
 
-	// Process matches in reverse order to maintain correct indices
-	result := prompt
-	for i := len(jsonMatches) - 1; i >= 0; i-- {
-		match := jsonMatches[i]
+	// Use strings.Builder for efficient string concatenation
+	var builder strings.Builder
+	// Pre-allocate capacity: original prompt + sum of JSON sizes + TOON overhead
+	// TOON format typically adds ~100 bytes per JSON (header + formatting)
+	estimatedSize := len(prompt)
+	for _, match := range jsonMatches {
+		estimatedSize += len(match.Content) + 100 // JSON size + TOON overhead
+	}
+	builder.Grow(estimatedSize)
 
-		// Parse JSON
-		var jsonData interface{}
-		if err := json.Unmarshal([]byte(match.Content), &jsonData); err != nil {
-			log.Printf("Failed to parse JSON at [%d:%d]: %v", match.Start, match.End, err)
-			continue
+	// Process matches in forward order, building result efficiently
+	lastPos := 0
+	for _, match := range jsonMatches {
+		// Add text before this match
+		builder.WriteString(prompt[lastPos:match.Start])
+
+		// Convert to TOON using cached parsed data
+		if match.ParsedData == nil {
+			// Fallback: parse if not cached (shouldn't happen in optimized path)
+			var jsonData interface{}
+			if err := json.Unmarshal([]byte(match.Content), &jsonData); err != nil {
+				log.Printf("Failed to parse JSON at [%d:%d]: %v", match.Start, match.End, err)
+				// Keep original JSON if conversion fails
+				builder.WriteString(match.Content)
+				lastPos = match.End + 1
+				continue
+			}
+			match.ParsedData = jsonData
 		}
 
 		// Convert to TOON
-		toonStr, err := gotoon.Encode(jsonData)
+		toonStr, err := gotoon.Encode(match.ParsedData)
 		if err != nil {
 			log.Printf("Failed to encode JSON to TOON at [%d:%d]: %v", match.Start, match.End, err)
+			// Keep original JSON if conversion fails
+			builder.WriteString(match.Content)
+			lastPos = match.End + 1
 			continue
 		}
 
 		// Wrap TOON in code block with format description
-		toonBlock := fmt.Sprintf("Data is TOON format (2-space indent, arrays show length and fields)\n```toon\n%s\n```", toonStr)
+		builder.WriteString("Data is TOON format (2-space indent, arrays show length and fields)\n```toon\n")
+		builder.WriteString(toonStr)
+		builder.WriteString("\n```")
 
-		// Replace JSON with TOON block in the prompt
-		result = result[:match.Start] + toonBlock + result[match.End+1:]
-
-		log.Printf("Converted JSON[%d] at [%d:%d] to TOON format", i, match.Start, match.End)
+		lastPos = match.End + 1
 	}
 
-	return result
+	// Add remaining text after last match
+	if lastPos < len(prompt) {
+		builder.WriteString(prompt[lastPos:])
+	}
+
+	return builder.String()
 }
 
 // findAndValidateJSON finds all JSON structures in text and validates them
+// Optimized: parses JSON during validation to cache parsed data
 func findAndValidateJSON(text string) []JSONMatch {
-	var matches []JSONMatch
+	// Pre-allocate matches slice with estimated capacity (typically 1-5 JSON per prompt)
+	matches := make([]JSONMatch, 0, 4)
+	textBytes := []byte(text) // Convert to []byte once for better performance
 
 	// Find all potential JSON matches by looking for { or [
-	for i := 0; i < len(text); i++ {
-		if text[i] == '{' {
-			end := findMatchingBrace(text, i, '{', '}')
+	for i := 0; i < len(textBytes); i++ {
+		var end int
+		var jsonStr string
+
+		// Handle both { and [ in unified way
+		if textBytes[i] == '{' {
+			end = findMatchingBraceBytes(textBytes, i, '{', '}')
 			if end > i {
-				jsonStr := text[i : end+1]
-				if isValidJSON(jsonStr) {
-					matches = append(matches, JSONMatch{
-						Content: jsonStr,
-						Start:   i,
-						End:     end,
-					})
-					// Skip past this JSON to avoid overlapping matches
-					i = end
-					continue
-				}
+				jsonStr = text[i : end+1]
 			}
-		} else if text[i] == '[' {
-			end := findMatchingBrace(text, i, '[', ']')
+		} else if textBytes[i] == '[' {
+			end = findMatchingBraceBytes(textBytes, i, '[', ']')
 			if end > i {
-				jsonStr := text[i : end+1]
-				if isValidJSON(jsonStr) {
-					matches = append(matches, JSONMatch{
-						Content: jsonStr,
-						Start:   i,
-						End:     end,
-					})
-					// Skip past this JSON to avoid overlapping matches
-					i = end
-					continue
-				}
+				jsonStr = text[i : end+1]
+			}
+		} else {
+			continue
+		}
+
+		// Parse and validate in one step
+		if jsonStr != "" {
+			var jsonData interface{}
+			if err := json.Unmarshal([]byte(jsonStr), &jsonData); err == nil {
+				matches = append(matches, JSONMatch{
+					Content:    jsonStr,
+					ParsedData: jsonData,
+					Start:      i,
+					End:        end,
+				})
+				// Skip past this JSON to avoid overlapping matches
+				i = end
 			}
 		}
 	}
 	return matches
 }
 
-// findMatchingBrace finds the matching closing brace/bracket
-func findMatchingBrace(text string, start int, open, close byte) int {
+// findMatchingBraceBytes finds the matching closing brace/bracket using []byte
+// Optimized: uses []byte to avoid string boundary checks and improve performance
+func findMatchingBraceBytes(text []byte, start int, open, close byte) int {
 	if start >= len(text) || text[start] != open {
 		return -1
 	}
@@ -328,8 +368,7 @@ func findMatchingBrace(text string, start int, open, close byte) int {
 	return -1
 }
 
-// isValidJSON checks if a string is valid JSON
-func isValidJSON(s string) bool {
-	var js interface{}
-	return json.Unmarshal([]byte(s), &js) == nil
+// findMatchingBrace finds the matching closing brace/bracket (legacy, kept for compatibility)
+func findMatchingBrace(text string, start int, open, close byte) int {
+	return findMatchingBraceBytes([]byte(text), start, open, close)
 }
