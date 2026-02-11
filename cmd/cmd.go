@@ -35,6 +35,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/cmd/config"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/genai"
@@ -1684,6 +1685,10 @@ func NewCLI() *cobra.Command {
 		deleteCmd,
 		runnerCmd,
 		genairunnerCmd,
+		config.LaunchCmd(checkServerHeartbeat, func(cmd *cobra.Command) {
+			// OpenVINO 版本没有上游的交互式 TUI；这里保持原有行为：显示帮助/用法。
+			_ = cmd.Root().Help()
+		}),
 	)
 
 	return rootCmd
