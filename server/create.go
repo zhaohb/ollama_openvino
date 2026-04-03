@@ -567,6 +567,13 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 		}
 	}
 
+	if r.ModelBackend != "" {
+		layers, err = setModelBackend(layers, r.ModelBackend)
+		if err != nil {
+			return err
+		}
+	}
+
 	if r.ModelType != "" {
 		layers, err = setModelType(layers, r.ModelType)
 		if err != nil {
@@ -841,6 +848,19 @@ func setModelType(layers []manifest.Layer, s string) ([]manifest.Layer, error) {
 	if s != "" {
 		blob := strings.NewReader(s)
 		layer, err := manifest.NewLayer(blob, "application/vnd.ollama.image.modeltype")
+		if err != nil {
+			return nil, err
+		}
+		layers = append(layers, layer)
+	}
+	return layers, nil
+}
+
+func setModelBackend(layers []manifest.Layer, s string) ([]manifest.Layer, error) {
+	layers = removeLayer(layers, "application/vnd.ollama.image.modelbackend")
+	if s != "" {
+		blob := strings.NewReader(s)
+		layer, err := manifest.NewLayer(blob, "application/vnd.ollama.image.modelbackend")
 		if err != nil {
 			return nil, err
 		}

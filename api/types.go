@@ -64,6 +64,8 @@ type GenerateRequest struct {
 	// the library at https://ollama.com/library
 	Model string `json:"model"`
 
+	ModelBackend string `json:"modelbackend"`
+
 	ModelType string `json:"modeltype"`
 
 	InferDevice string `json:"inferdevice"`
@@ -699,8 +701,9 @@ type CreateRequest struct {
 	// System is the system prompt for the model.
 	System string `json:"system,omitempty"`
 
-	ModelType   string `json:"modeltype,omitempty"`
-	InferDevice string `json:"inferdevice,omitempty"`
+	ModelBackend string `json:"modelbackend,omitempty"`
+	ModelType    string `json:"modeltype,omitempty"`
+	InferDevice  string `json:"inferdevice,omitempty"`
 
 	// Parameters is a map of hyper-parameters which are applied to the model.
 	Parameters map[string]any `json:"parameters,omitempty"`
@@ -753,6 +756,7 @@ type ShowResponse struct {
 	Parameters    string             `json:"parameters,omitempty"`
 	Template      string             `json:"template,omitempty"`
 	System        string             `json:"system,omitempty"`
+	ModelBackend  string             `json:"modelbackend,omitempty"`
 	ModelType     string             `json:"modeltype,omitempty"`
 	InferDevice   string             `json:"inferdevice,omitempty"`
 	Renderer      string             `json:"renderer,omitempty"`
