@@ -2397,355 +2397,462 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		caps = append(caps, model.CapabilityTools)
 	}
 
-	modelCaps := m.Capabilities()
-	if slices.Contains(modelCaps, model.CapabilityThinking) {
-		caps = append(caps, model.CapabilityThinking)
-		if req.Think == nil {
-			req.Think = &api.ThinkValue{Value: true}
-		}
-	} else {
-		if req.Think != nil && req.Think.Bool() {
-			// Set think to nil when being used with Anthropic API to connect to tools like claude code
-			if _, ok := c.Get("relax_thinking"); ok {
-				slog.Warn("model does not support thinking, relaxing thinking to nil", "model", req.Model)
-				req.Think = nil
-			} else {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support thinking", req.Model)})
-				return
+	if m.ModelBackend != "OpenVINO" {
+
+		modelCaps := m.Capabilities()
+		if slices.Contains(modelCaps, model.CapabilityThinking) {
+			caps = append(caps, model.CapabilityThinking)
+			if req.Think == nil {
+				req.Think = &api.ThinkValue{Value: true}
 			}
-		}
-	}
-
-	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
-	if errors.Is(err, errCapabilityCompletion) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
-		return
-	} else if err != nil {
-		handleScheduleError(c, req.Model, err)
-		return
-	}
-
-	checkpointLoaded := time.Now()
-
-	if len(req.Messages) == 0 {
-		c.JSON(http.StatusOK, api.ChatResponse{
-			Model:      req.Model,
-			CreatedAt:  time.Now().UTC(),
-			Message:    api.Message{Role: "assistant"},
-			Done:       true,
-			DoneReason: "load",
-		})
-		return
-	}
-
-	msgs := append(m.Messages, req.Messages...)
-	if req.Messages[0].Role != "system" && m.System != "" {
-		msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
-	}
-	msgs = filterThinkTags(msgs, m)
-
-	if shouldUseHarmony(m) && m.Config.Parser == "" {
-		m.Config.Parser = "harmony"
-	}
-
-	var builtinParser parsers.Parser
-	processedTools := req.Tools
-
-	if m.Config.Parser != "" {
-		builtinParser = parsers.ParserForName(m.Config.Parser)
-		if builtinParser != nil {
-			// Determine last message for chat prefill
-			var lastMessage *api.Message
-			if len(msgs) > 0 {
-				lastMessage = &msgs[len(msgs)-1]
-			}
-			// Initialize parser and get processed tools
-			processedTools = builtinParser.Init(req.Tools, lastMessage, req.Think)
-		}
-	}
-
-	truncate := req.Truncate == nil || *req.Truncate
-	if m.IsMLX() {
-		truncate = false
-	}
-	prompt, images, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
-	if err != nil {
-		slog.Error("chat prompt error", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// If debug mode is enabled, return the rendered template instead of calling the model
-	if req.DebugRenderOnly {
-		c.JSON(http.StatusOK, api.ChatResponse{
-			Model:     req.Model,
-			CreatedAt: time.Now().UTC(),
-			DebugInfo: &api.DebugInfo{
-				RenderedTemplate: prompt,
-				ImageCount:       len(images),
-			},
-		})
-		return
-	}
-
-	var thinkingState *thinking.Parser
-	openingTag, closingTag := thinking.InferTags(m.Template.Template)
-	if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
-		thinkingState = &thinking.Parser{
-			OpeningTag: openingTag,
-			ClosingTag: closingTag,
-		}
-
-		if strings.HasSuffix(strings.TrimSpace(prompt), openingTag) {
-			thinkingState.AddContent(openingTag)
-		}
-	}
-
-	var toolParser *tools.Parser
-	if len(req.Tools) > 0 && (builtinParser == nil || !builtinParser.HasToolSupport()) {
-		toolParser = tools.NewParser(m.Template.Template, req.Tools)
-	}
-
-	type structuredOutputsState int
-	const (
-		structuredOutputsState_None structuredOutputsState = iota
-		structuredOutputsState_ReadyToApply
-		structuredOutputsState_Applying
-	)
-
-	ch := make(chan any)
-	go func() {
-		defer close(ch)
-
-		structuredOutputsState := structuredOutputsState_None
-
-		for {
-			var tb strings.Builder
-
-			currentFormat := req.Format
-			// structured outputs via double request is enabled when:
-			// 1. the model supports the thinking capability and
-			// 2. it uses a built-in parser or our generic thinking parser
-
-			// Note that the current approach does not work for (potential future)
-			// non-thinking models that emit anything before actual content. This
-			// current approach uses the transition from parsed thinking content to
-			// parsed non-thinking content as the signal to turn constraining on
-
-			if req.Format != nil && structuredOutputsState == structuredOutputsState_None && ((builtinParser != nil || thinkingState != nil) && slices.Contains(m.Capabilities(), model.CapabilityThinking)) {
-				currentFormat = nil
-			}
-
-			// sets up new context given parent context per request
-			ctx, cancel := context.WithCancel(c.Request.Context())
-			err := r.Completion(ctx, llm.CompletionRequest{
-				Prompt:      prompt,
-				Images:      images,
-				Format:      currentFormat,
-				Options:     opts,
-				Shift:       req.Shift == nil || *req.Shift,
-				Truncate:    truncate,
-				Logprobs:    req.Logprobs,
-				TopLogprobs: req.TopLogprobs,
-			}, func(r llm.CompletionResponse) {
-				res := api.ChatResponse{
-					Model:     req.Model,
-					CreatedAt: time.Now().UTC(),
-					Message:   api.Message{Role: "assistant", Content: r.Content},
-					Done:      r.Done,
-					Metrics: api.Metrics{
-						PromptEvalCount:    r.PromptEvalCount,
-						PromptEvalDuration: r.PromptEvalDuration,
-						EvalCount:          r.EvalCount,
-						EvalDuration:       r.EvalDuration,
-					},
-					Logprobs: toAPILogprobs(r.Logprobs),
-				}
-
-				if r.Done {
-					res.DoneReason = r.DoneReason.String()
-					res.TotalDuration = time.Since(checkpointStart)
-					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
-				}
-
-				if builtinParser != nil {
-					slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser input", "parser", m.Config.Parser, "content", r.Content)
-
-					content, thinking, toolCalls, err := builtinParser.Add(r.Content, r.Done)
-					if err != nil {
-						ch <- gin.H{"error": err.Error()}
-						return
-					}
-
-					res.Message.Content = content
-					res.Message.Thinking = thinking
-					for i := range toolCalls {
-						toolCalls[i].ID = toolCallId()
-					}
-					res.Message.ToolCalls = toolCalls
-
-					tb.WriteString(thinking)
-					// we are now receiving content from the model - we should start applying structured outputs
-					if structuredOutputsState == structuredOutputsState_None && req.Format != nil && tb.String() != "" && res.Message.Content != "" {
-						structuredOutputsState = structuredOutputsState_ReadyToApply
-						cancel()
-						return
-					}
-
-					if res.Message.Content != "" || res.Message.Thinking != "" || len(res.Message.ToolCalls) > 0 || r.Done || len(res.Logprobs) > 0 {
-						slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser output", "parser", m.Config.Parser, "content", content, "thinking", thinking, "toolCalls", toolCalls, "done", r.Done)
-						ch <- res
-					} else {
-						slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser empty output", "parser", m.Config.Parser)
-					}
+		} else {
+			if req.Think != nil && req.Think.Bool() {
+				// Set think to nil when being used with Anthropic API to connect to tools like claude code
+				if _, ok := c.Get("relax_thinking"); ok {
+					slog.Warn("model does not support thinking, relaxing thinking to nil", "model", req.Model)
+					req.Think = nil
+				} else {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support thinking", req.Model)})
 					return
 				}
+			}
+		}
 
-				if thinkingState != nil {
-					thinkingContent, remainingContent := thinkingState.AddContent(res.Message.Content)
-					if thinkingContent == "" && remainingContent == "" && !r.Done {
-						// need to accumulate more to decide what to send
-						return
-					}
-					res.Message.Thinking = thinkingContent
-					tb.WriteString(thinkingContent)
-					// emit the collected thinking text before restarting with structured outputs and clear unstructured content
-					// to avoid leaking mixed tokens like "</think>Hello"
-					if structuredOutputsState == structuredOutputsState_None && req.Format != nil && tb.String() != "" && remainingContent != "" {
-						structuredOutputsState = structuredOutputsState_ReadyToApply
-						res.Message.Content = ""
-						ch <- res
-						cancel()
-						return
-					}
-					res.Message.Content = remainingContent
+		r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
+			return
+		} else if err != nil {
+			handleScheduleError(c, req.Model, err)
+			return
+		}
+
+		checkpointLoaded := time.Now()
+
+		if len(req.Messages) == 0 {
+			c.JSON(http.StatusOK, api.ChatResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Message:    api.Message{Role: "assistant"},
+				Done:       true,
+				DoneReason: "load",
+			})
+			return
+		}
+
+		msgs := append(m.Messages, req.Messages...)
+		if req.Messages[0].Role != "system" && m.System != "" {
+			msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
+		}
+		msgs = filterThinkTags(msgs, m)
+
+		if shouldUseHarmony(m) && m.Config.Parser == "" {
+			m.Config.Parser = "harmony"
+		}
+
+		var builtinParser parsers.Parser
+		processedTools := req.Tools
+
+		if m.Config.Parser != "" {
+			builtinParser = parsers.ParserForName(m.Config.Parser)
+			if builtinParser != nil {
+				// Determine last message for chat prefill
+				var lastMessage *api.Message
+				if len(msgs) > 0 {
+					lastMessage = &msgs[len(msgs)-1]
+				}
+				// Initialize parser and get processed tools
+				processedTools = builtinParser.Init(req.Tools, lastMessage, req.Think)
+			}
+		}
+
+		truncate := req.Truncate == nil || *req.Truncate
+		if m.IsMLX() {
+			truncate = false
+		}
+		prompt, images, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
+		if err != nil {
+			slog.Error("chat prompt error", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		// If debug mode is enabled, return the rendered template instead of calling the model
+		if req.DebugRenderOnly {
+			c.JSON(http.StatusOK, api.ChatResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				DebugInfo: &api.DebugInfo{
+					RenderedTemplate: prompt,
+					ImageCount:       len(images),
+				},
+			})
+			return
+		}
+
+		var thinkingState *thinking.Parser
+		openingTag, closingTag := thinking.InferTags(m.Template.Template)
+		if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
+			thinkingState = &thinking.Parser{
+				OpeningTag: openingTag,
+				ClosingTag: closingTag,
+			}
+
+			if strings.HasSuffix(strings.TrimSpace(prompt), openingTag) {
+				thinkingState.AddContent(openingTag)
+			}
+		}
+
+		var toolParser *tools.Parser
+		if len(req.Tools) > 0 && (builtinParser == nil || !builtinParser.HasToolSupport()) {
+			toolParser = tools.NewParser(m.Template.Template, req.Tools)
+		}
+
+		type structuredOutputsState int
+		const (
+			structuredOutputsState_None structuredOutputsState = iota
+			structuredOutputsState_ReadyToApply
+			structuredOutputsState_Applying
+		)
+
+		ch := make(chan any)
+		go func() {
+			defer close(ch)
+
+			structuredOutputsState := structuredOutputsState_None
+
+			for {
+				var tb strings.Builder
+
+				currentFormat := req.Format
+				// structured outputs via double request is enabled when:
+				// 1. the model supports the thinking capability and
+				// 2. it uses a built-in parser or our generic thinking parser
+
+				// Note that the current approach does not work for (potential future)
+				// non-thinking models that emit anything before actual content. This
+				// current approach uses the transition from parsed thinking content to
+				// parsed non-thinking content as the signal to turn constraining on
+
+				if req.Format != nil && structuredOutputsState == structuredOutputsState_None && ((builtinParser != nil || thinkingState != nil) && slices.Contains(m.Capabilities(), model.CapabilityThinking)) {
+					currentFormat = nil
 				}
 
-				if len(req.Tools) > 0 {
-					toolCalls, content := toolParser.Add(res.Message.Content)
-					if len(content) > 0 {
+				// sets up new context given parent context per request
+				ctx, cancel := context.WithCancel(c.Request.Context())
+				err := r.Completion(ctx, llm.CompletionRequest{
+					Prompt:      prompt,
+					Images:      images,
+					Format:      currentFormat,
+					Options:     opts,
+					Shift:       req.Shift == nil || *req.Shift,
+					Truncate:    truncate,
+					Logprobs:    req.Logprobs,
+					TopLogprobs: req.TopLogprobs,
+				}, func(r llm.CompletionResponse) {
+					res := api.ChatResponse{
+						Model:     req.Model,
+						CreatedAt: time.Now().UTC(),
+						Message:   api.Message{Role: "assistant", Content: r.Content},
+						Done:      r.Done,
+						Metrics: api.Metrics{
+							PromptEvalCount:    r.PromptEvalCount,
+							PromptEvalDuration: r.PromptEvalDuration,
+							EvalCount:          r.EvalCount,
+							EvalDuration:       r.EvalDuration,
+						},
+						Logprobs: toAPILogprobs(r.Logprobs),
+					}
+
+					if r.Done {
+						res.DoneReason = r.DoneReason.String()
+						res.TotalDuration = time.Since(checkpointStart)
+						res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+					}
+
+					if builtinParser != nil {
+						slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser input", "parser", m.Config.Parser, "content", r.Content)
+
+						content, thinking, toolCalls, err := builtinParser.Add(r.Content, r.Done)
+						if err != nil {
+							ch <- gin.H{"error": err.Error()}
+							return
+						}
+
 						res.Message.Content = content
-					} else if len(toolCalls) > 0 {
+						res.Message.Thinking = thinking
 						for i := range toolCalls {
 							toolCalls[i].ID = toolCallId()
 						}
 						res.Message.ToolCalls = toolCalls
-						res.Message.Content = ""
-					} else if res.Message.Thinking != "" {
-						// don't return, fall through to send
-					} else {
-						//  Send logprobs while content is being buffered by the parser for tool calls
-						if len(res.Logprobs) > 0 && !r.Done {
-							logprobRes := res
-							logprobRes.Message.Content = ""
-							logprobRes.Message.ToolCalls = nil
-							ch <- logprobRes
+
+						tb.WriteString(thinking)
+						// we are now receiving content from the model - we should start applying structured outputs
+						if structuredOutputsState == structuredOutputsState_None && req.Format != nil && tb.String() != "" && res.Message.Content != "" {
+							structuredOutputsState = structuredOutputsState_ReadyToApply
+							cancel()
+							return
 						}
 
-						if r.Done {
-							res.Message.Content = toolParser.Content()
+						if res.Message.Content != "" || res.Message.Thinking != "" || len(res.Message.ToolCalls) > 0 || r.Done || len(res.Logprobs) > 0 {
+							slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser output", "parser", m.Config.Parser, "content", content, "thinking", thinking, "toolCalls", toolCalls, "done", r.Done)
 							ch <- res
+						} else {
+							slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser empty output", "parser", m.Config.Parser)
+						}
+						return
+					}
+
+					if thinkingState != nil {
+						thinkingContent, remainingContent := thinkingState.AddContent(res.Message.Content)
+						if thinkingContent == "" && remainingContent == "" && !r.Done {
+							// need to accumulate more to decide what to send
+							return
+						}
+						res.Message.Thinking = thinkingContent
+						tb.WriteString(thinkingContent)
+						// emit the collected thinking text before restarting with structured outputs and clear unstructured content
+						// to avoid leaking mixed tokens like "</think>Hello"
+						if structuredOutputsState == structuredOutputsState_None && req.Format != nil && tb.String() != "" && remainingContent != "" {
+							structuredOutputsState = structuredOutputsState_ReadyToApply
+							res.Message.Content = ""
+							ch <- res
+							cancel()
+							return
+						}
+						res.Message.Content = remainingContent
+					}
+
+					if len(req.Tools) > 0 {
+						toolCalls, content := toolParser.Add(res.Message.Content)
+						if len(content) > 0 {
+							res.Message.Content = content
+						} else if len(toolCalls) > 0 {
+							for i := range toolCalls {
+								toolCalls[i].ID = toolCallId()
+							}
+							res.Message.ToolCalls = toolCalls
+							res.Message.Content = ""
+						} else if res.Message.Thinking != "" {
+							// don't return, fall through to send
+						} else {
+							//  Send logprobs while content is being buffered by the parser for tool calls
+							if len(res.Logprobs) > 0 && !r.Done {
+								logprobRes := res
+								logprobRes.Message.Content = ""
+								logprobRes.Message.ToolCalls = nil
+								ch <- logprobRes
+							}
+
+							if r.Done {
+								res.Message.Content = toolParser.Content()
+								ch <- res
+							}
+							return
+						}
+					}
+
+					ch <- res
+				})
+				if err != nil {
+					if structuredOutputsState == structuredOutputsState_ReadyToApply && strings.Contains(err.Error(), "context canceled") && c.Request.Context().Err() == nil {
+						// only ignores error if it's a context cancellation due to setting structured outputs
+					} else {
+						var serr api.StatusError
+						if errors.As(err, &serr) {
+							ch <- gin.H{"error": serr.ErrorMessage, "status": serr.StatusCode}
+						} else {
+							ch <- gin.H{"error": err.Error()}
 						}
 						return
 					}
 				}
 
-				ch <- res
-			})
-			if err != nil {
-				if structuredOutputsState == structuredOutputsState_ReadyToApply && strings.Contains(err.Error(), "context canceled") && c.Request.Context().Err() == nil {
-					// only ignores error if it's a context cancellation due to setting structured outputs
-				} else {
-					var serr api.StatusError
-					if errors.As(err, &serr) {
-						ch <- gin.H{"error": serr.ErrorMessage, "status": serr.StatusCode}
-					} else {
-						ch <- gin.H{"error": err.Error()}
+				// ignored structured outputs cancellation falls through to here, start a new request with the structured outputs and updated prompt. use the
+				if structuredOutputsState == structuredOutputsState_ReadyToApply {
+					structuredOutputsState = structuredOutputsState_Applying
+					msg := api.Message{
+						Role:     "assistant",
+						Thinking: tb.String(),
 					}
+
+					msgs = append(msgs, msg)
+					prompt, _, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
+					if err != nil {
+						slog.Error("chat prompt error applying structured outputs", "error", err)
+						ch <- gin.H{"error": err.Error()}
+						return
+					}
+					// force constraining by terminating thinking header, the parser is already at this state
+					// when the last message is thinking, the rendered for gpt-oss cannot disambiguate between having the
+					// model continue thinking or ending thinking and outputting the final message.
+					// TODO(parthsareen): consider adding prefill disambiguation logic to the renderer for structured outputs.
+					if shouldUseHarmony(m) || (builtinParser != nil && m.Config.Parser == "harmony") {
+						prompt += "<|end|><|start|>assistant<|channel|>final<|message|>"
+					}
+					continue
+				}
+
+				break
+			}
+		}()
+
+		if req.Stream != nil && !*req.Stream {
+			var resp api.ChatResponse
+			var toolCalls []api.ToolCall
+			var allLogprobs []api.Logprob
+			var sbThinking strings.Builder
+			var sbContent strings.Builder
+			for rr := range ch {
+				switch t := rr.(type) {
+				case api.ChatResponse:
+					sbThinking.WriteString(t.Message.Thinking)
+					sbContent.WriteString(t.Message.Content)
+					resp = t
+					if len(req.Tools) > 0 {
+						toolCalls = append(toolCalls, t.Message.ToolCalls...)
+					}
+					// Accumulate logprobs from all chunks for non-streaming response
+					if len(t.Logprobs) > 0 {
+						allLogprobs = append(allLogprobs, t.Logprobs...)
+					}
+				case gin.H:
+					msg, ok := t["error"].(string)
+					if !ok {
+						msg = "unexpected error format in response"
+					}
+
+					status, ok := t["status"].(int)
+					if !ok {
+						status = http.StatusInternalServerError
+					}
+
+					c.JSON(status, gin.H{"error": msg})
+					return
+				default:
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
 					return
 				}
 			}
 
-			// ignored structured outputs cancellation falls through to here, start a new request with the structured outputs and updated prompt. use the
-			if structuredOutputsState == structuredOutputsState_ReadyToApply {
-				structuredOutputsState = structuredOutputsState_Applying
-				msg := api.Message{
-					Role:     "assistant",
-					Thinking: tb.String(),
-				}
+			resp.Message.Content = sbContent.String()
+			resp.Message.Thinking = sbThinking.String()
+			resp.Logprobs = allLogprobs
 
-				msgs = append(msgs, msg)
-				prompt, _, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate)
-				if err != nil {
-					slog.Error("chat prompt error applying structured outputs", "error", err)
-					ch <- gin.H{"error": err.Error()}
+			if len(toolCalls) > 0 {
+				resp.Message.ToolCalls = toolCalls
+			}
+
+			c.JSON(http.StatusOK, resp)
+			return
+		}
+
+		streamResponse(c, ch)
+
+	} else {
+		// OpenVINO backend
+		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), m.ModelBackend, m.ModelType, m.InferDevice, caps, req.Options, req.KeepAlive)
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
+			return
+		} else if err != nil {
+			handleScheduleError(c, req.Model, err)
+			return
+		}
+
+		checkpointLoaded := time.Now()
+
+		log.Printf("ChatHandler model: %+v", m)
+		log.Printf("ChatHandler model backend: %s", m.ModelBackend)
+		log.Printf("ChatHandler model type: %s", m.ModelType)
+		log.Printf("ChatHandler model infer device: %s", m.InferDevice)
+
+		if len(req.Messages) == 0 {
+			c.JSON(http.StatusOK, api.ChatResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Message:    api.Message{Role: "assistant"},
+				Done:       true,
+				DoneReason: "load",
+			})
+			return
+		}
+
+		msgs := append(m.Messages, req.Messages...)
+		if len(req.Messages) > 0 && req.Messages[0].Role != "system" && m.System != "" {
+			msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
+		}
+		msgs = filterThinkTags(msgs, m)
+
+		prompt, images, err := genaiChatPrompt(c.Request.Context(), m, opts, msgs, req.Tools, req.Think)
+		if err != nil {
+			slog.Error("chat prompt error", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		log.Printf("ChatHandler prompt: %s", prompt)
+		log.Printf("ChatHandler images count: %d", len(images))
+
+		ch := make(chan any)
+		go func() {
+			defer close(ch)
+			if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
+				Prompt:  prompt,
+				Images:  images,
+				Format:  req.Format,
+				Options: opts,
+			}, func(cr llm.CompletionResponse) {
+				res := api.ChatResponse{
+					Model:     req.Model,
+					CreatedAt: time.Now().UTC(),
+					Message:   api.Message{Role: "assistant", Content: cr.Content},
+					Done:      cr.Done,
+					Metrics: api.Metrics{
+						PromptEvalCount:    cr.PromptEvalCount,
+						PromptEvalDuration: cr.PromptEvalDuration,
+						EvalCount:          cr.EvalCount,
+						EvalDuration:       cr.EvalDuration,
+					},
+				}
+				if cr.Done {
+					res.DoneReason = cr.DoneReason.String()
+					res.TotalDuration = time.Since(checkpointStart)
+					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+				}
+				ch <- res
+			}); err != nil {
+				ch <- gin.H{"error": err.Error()}
+			}
+		}()
+
+		if req.Stream != nil && !*req.Stream {
+			var resp api.ChatResponse
+			var sbContent strings.Builder
+			for rr := range ch {
+				switch t := rr.(type) {
+				case api.ChatResponse:
+					sbContent.WriteString(t.Message.Content)
+					resp = t
+				case gin.H:
+					msg, ok := t["error"].(string)
+					if !ok {
+						msg = "unexpected error format in response"
+					}
+					c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
+					return
+				default:
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
 					return
 				}
-				// force constraining by terminating thinking header, the parser is already at this state
-				// when the last message is thinking, the rendered for gpt-oss cannot disambiguate between having the
-				// model continue thinking or ending thinking and outputting the final message.
-				// TODO(parthsareen): consider adding prefill disambiguation logic to the renderer for structured outputs.
-				if shouldUseHarmony(m) || (builtinParser != nil && m.Config.Parser == "harmony") {
-					prompt += "<|end|><|start|>assistant<|channel|>final<|message|>"
-				}
-				continue
 			}
-
-			break
-		}
-	}()
-
-	if req.Stream != nil && !*req.Stream {
-		var resp api.ChatResponse
-		var toolCalls []api.ToolCall
-		var allLogprobs []api.Logprob
-		var sbThinking strings.Builder
-		var sbContent strings.Builder
-		for rr := range ch {
-			switch t := rr.(type) {
-			case api.ChatResponse:
-				sbThinking.WriteString(t.Message.Thinking)
-				sbContent.WriteString(t.Message.Content)
-				resp = t
-				if len(req.Tools) > 0 {
-					toolCalls = append(toolCalls, t.Message.ToolCalls...)
-				}
-				// Accumulate logprobs from all chunks for non-streaming response
-				if len(t.Logprobs) > 0 {
-					allLogprobs = append(allLogprobs, t.Logprobs...)
-				}
-			case gin.H:
-				msg, ok := t["error"].(string)
-				if !ok {
-					msg = "unexpected error format in response"
-				}
-
-				status, ok := t["status"].(int)
-				if !ok {
-					status = http.StatusInternalServerError
-				}
-
-				c.JSON(status, gin.H{"error": msg})
-				return
-			default:
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
-				return
-			}
+			resp.Message.Content = sbContent.String()
+			c.JSON(http.StatusOK, resp)
+			return
 		}
 
-		resp.Message.Content = sbContent.String()
-		resp.Message.Thinking = sbThinking.String()
-		resp.Logprobs = allLogprobs
-
-		if len(toolCalls) > 0 {
-			resp.Message.ToolCalls = toolCalls
-		}
-
-		c.JSON(http.StatusOK, resp)
-		return
+		streamResponse(c, ch)
 	}
-
-	streamResponse(c, ch)
 }
 
 func handleScheduleError(c *gin.Context, name string, err error) {
