@@ -41,6 +41,7 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
 
+	"github.com/ollama/ollama/genai/common"
 	"github.com/ollama/ollama/llm"
 	genaiserver "github.com/ollama/ollama/llm/genai"
 	"github.com/ollama/ollama/logutil"
@@ -1982,6 +1983,18 @@ func Serve(ln net.Listener) error {
 		s.defaultNumCtx = 4096
 	}
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
+
+	genai_device := common.GetGenaiAvailableDevices()
+
+	if len(genai_device) == 0 {
+		log.Printf("No devices available for GenAI")
+	}
+	for i := 0; i < int(len(genai_device)); i++ {
+		slog.Info("GenAI inference device",
+			"Device", genai_device[i]["device_name"],
+			"Build Number", genai_device[i]["buildNumber"],
+			"description", genai_device[i]["description"])
+	}
 
 	err = srvr.Serve(ln)
 	// If server is closed from the signal handler, wait for the ctx to be done

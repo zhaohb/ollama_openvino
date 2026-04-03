@@ -1176,27 +1176,29 @@ func showInfo(resp *api.ShowResponse, verbose bool, w io.Writer) error {
 				rows = append(rows, []string{"", "architecture", arch})
 			}
 
-			var paramStr string
-			if resp.Details.ParameterSize != "" {
-				paramStr = resp.Details.ParameterSize
-			} else if v, ok := resp.ModelInfo["general.parameter_count"]; ok {
-				if f, ok := v.(float64); ok {
-					paramStr = format.HumanNumber(uint64(f))
+			if arch != "OpenVINO" {
+				var paramStr string
+				if resp.Details.ParameterSize != "" {
+					paramStr = resp.Details.ParameterSize
+				} else if v, ok := resp.ModelInfo["general.parameter_count"]; ok {
+					if f, ok := v.(float64); ok {
+						paramStr = format.HumanNumber(uint64(f))
+					}
 				}
-			}
-			if paramStr != "" {
-				rows = append(rows, []string{"", "parameters", paramStr})
-			}
-
-			if v, ok := resp.ModelInfo[fmt.Sprintf("%s.context_length", arch)]; ok {
-				if f, ok := v.(float64); ok {
-					rows = append(rows, []string{"", "context length", strconv.FormatFloat(f, 'f', -1, 64)})
+				if paramStr != "" {
+					rows = append(rows, []string{"", "parameters", paramStr})
 				}
-			}
 
-			if v, ok := resp.ModelInfo[fmt.Sprintf("%s.embedding_length", arch)]; ok {
-				if f, ok := v.(float64); ok {
-					rows = append(rows, []string{"", "embedding length", strconv.FormatFloat(f, 'f', -1, 64)})
+				if v, ok := resp.ModelInfo[fmt.Sprintf("%s.context_length", arch)]; ok {
+					if f, ok := v.(float64); ok {
+						rows = append(rows, []string{"", "context length", strconv.FormatFloat(f, 'f', -1, 64)})
+					}
+				}
+
+				if v, ok := resp.ModelInfo[fmt.Sprintf("%s.embedding_length", arch)]; ok {
+					if f, ok := v.(float64); ok {
+						rows = append(rows, []string{"", "embedding length", strconv.FormatFloat(f, 'f', -1, 64)})
+					}
 				}
 			}
 		} else {
