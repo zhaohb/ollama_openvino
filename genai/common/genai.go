@@ -15,6 +15,8 @@ package common
 #include "openvino/genai/c/llm_pipeline.h"
 #include "openvino/genai/c/vlm_pipeline.h"
 #include "openvino/genai/c/visibility.h"
+#include "openvino/genai/c/chat_history.h"
+#include "openvino/genai/c/json_container.h"
 
 #include "openvino/c/openvino.h"
 #include "openvino/c/ov_common.h"
@@ -55,6 +57,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/gif"  // 支持 GIF
@@ -332,15 +335,10 @@ func SetSamplingParams(samplingparameters *SamplingParams) *C.ov_genai_generatio
 }
 
 func GenerateTextWithMetrics(pipeline *C.ov_genai_llm_pipeline, input string, samplingparameters *SamplingParams, seq *Sequence) string {
-	cInput := C.CString(input)
-	defer C.free(unsafe.Pointer(cInput))
-
 	cConfig := SetSamplingParams(samplingparameters)
 	var result *C.ov_genai_decoded_results
-
 	output_size := C.size_t(0)
 
-	// 创建 streamer_callback
 	var streamer_callback C.streamer_callback
 	streamer_callback.callback_func = (C.callback_function)(unsafe.Pointer(C.goCallbackBridge))
 
@@ -348,9 +346,75 @@ func GenerateTextWithMetrics(pipeline *C.ov_genai_llm_pipeline, input string, sa
 	defer handle.Delete()
 	streamer_callback.args = unsafe.Pointer(uintptr(handle))
 
-	C.ov_genai_llm_pipeline_start_chat(pipeline)
-	C.ov_genai_llm_pipeline_generate(pipeline, cInput, (*C.ov_genai_generation_config)(cConfig), &streamer_callback, &result)
-	C.ov_genai_llm_pipeline_finish_chat(pipeline)
+	// 构建 chat_history
+	var chatHistory *C.ov_genai_chat_history
+	chatStatus := C.ov_genai_chat_history_create(&chatHistory)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		log.Printf("failed to create chat history: %d", chatStatus)
+		return ""
+	}
+	defer C.ov_genai_chat_history_free(chatHistory)
+
+	// 将 prompt 构建为 user message JSON 并加入 history
+	messageJSON, err := json.Marshal(map[string]string{
+		"role":    "user",
+		"content": input,
+	})
+	if err != nil {
+		log.Printf("failed to marshal user message: %v", err)
+		return ""
+	}
+
+	cMessageJSON := C.CString(string(messageJSON))
+	defer C.free(unsafe.Pointer(cMessageJSON))
+
+	var messageContainer *C.ov_genai_json_container
+	jsonStatus := C.ov_genai_json_container_create_from_json_string(&messageContainer, cMessageJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		log.Printf("failed to create message json container: %d", jsonStatus)
+		return ""
+	}
+	defer C.ov_genai_json_container_free(messageContainer)
+
+	chatStatus = C.ov_genai_chat_history_push_back(chatHistory, messageContainer)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		log.Printf("failed to push message to chat history: %d", chatStatus)
+		return ""
+	}
+
+	// 如果有 tools，通过 chat_history 设置
+	tools := seq.GetTools()
+	if len(tools) > 0 {
+		toolsJSON, err := json.Marshal(tools)
+		if err != nil {
+			log.Printf("failed to marshal tools: %v", err)
+		} else {
+			log.Printf("setting tools on chat_history: %s", string(toolsJSON))
+			cToolsJSON := C.CString(string(toolsJSON))
+			defer C.free(unsafe.Pointer(cToolsJSON))
+
+			var toolsContainer *C.ov_genai_json_container
+			jsonStatus = C.ov_genai_json_container_create_from_json_string(&toolsContainer, cToolsJSON)
+			if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+				log.Printf("failed to create tools json container: %d", jsonStatus)
+			} else {
+				defer C.ov_genai_json_container_free(toolsContainer)
+				chatStatus = C.ov_genai_chat_history_set_tools(chatHistory, toolsContainer)
+				if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+					log.Printf("failed to set tools on chat history: %d", chatStatus)
+				} else {
+					log.Printf("tools set on chat_history successfully")
+				}
+			}
+		}
+	}
+
+	// 使用 generate_with_history 替代 generate
+	C.ov_genai_llm_pipeline_generate_with_history(pipeline,
+		chatHistory,
+		(*C.ov_genai_generation_config)(cConfig),
+		&streamer_callback,
+		&result)
 
 	C.ov_genai_decoded_results_get_string(result, (*C.char)(nil), &output_size)
 	cOutput := C.malloc(output_size)
@@ -503,8 +567,8 @@ func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string,
 		cRgbs = (**C.ov_tensor_t)(unsafe.Pointer(&rgbs[0]))
 	}
 
-	log.Printf("input: ", input)
-	log.Printf("len of rgbs: ", len(rgbs))
+	log.Printf("input: %s", input)
+	log.Printf("len of rgbs: %d", len(rgbs))
 	C.ov_genai_vlm_pipeline_start_chat(pipeline)
 	C.ov_genai_vlm_pipeline_generate(pipeline, cInput, cRgbs, C.size_t(len(rgbs)), (*C.ov_genai_generation_config)(cConfig), &streamer_callback, &result)
 	C.ov_genai_vlm_pipeline_finish_chat(pipeline)
@@ -520,7 +584,7 @@ func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string,
 
 	PrintGenaiMetrics(metrics)
 
-	log.Printf("result: ", C.GoString((*C.char)(cOutput)))
+	log.Printf("result: %s", C.GoString((*C.char)(cOutput)))
 
 	return C.GoString((*C.char)(cOutput))
 }
