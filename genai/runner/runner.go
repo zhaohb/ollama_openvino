@@ -19,14 +19,14 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
-	"github.com/ollama/ollama/genai"
+	"github.com/ollama/ollama/genai/common"
 	"golang.org/x/sync/semaphore"
 )
 
 type NewSequenceParams struct {
 	numPredict     int
 	stop           []string
-	samplingParams *genai.SamplingParams
+	samplingParams *common.SamplingParams
 }
 
 type Server struct {
@@ -35,7 +35,7 @@ type Server struct {
 	ready sync.WaitGroup
 
 	// loaded model
-	model genai.Model
+	model common.Model
 
 	// status for external health reporting - loading, ready to serve, etc.
 	status ServerStatus
@@ -58,7 +58,7 @@ type Server struct {
 	cond *sync.Cond
 
 	// the list of simultaneous sequences being evaluated
-	seqs []*(genai.Sequence)
+	seqs []*(common.Sequence)
 
 	// seqs can have a maximum of parallel entries, which
 	// is enfoced by seqSem
@@ -77,8 +77,8 @@ func (s *Server) allNil() bool {
 	return true
 }
 
-func (s *Server) inputs(prompt string, images []ImageData) ([]genai.Input, error) {
-	var inputs []genai.Input
+func (s *Server) inputs(prompt string, images []ImageData) ([]common.Input, error) {
+	var inputs []common.Input
 	var parts []string
 
 	parts = []string{prompt}
@@ -88,13 +88,13 @@ func (s *Server) inputs(prompt string, images []ImageData) ([]genai.Input, error
 		// for _, t := range part {
 		// 	inputs = append(inputs, input{prompt: string(t)})
 		// }
-		inputs = append(inputs, genai.Input{Prompt: string(part)})
+		inputs = append(inputs, common.Input{Prompt: string(part)})
 	}
 
 	return inputs, nil
 }
 
-func (s *Server) NewSequence(prompt string, images []ImageData, params NewSequenceParams) (*(genai.Sequence), error) {
+func (s *Server) NewSequence(prompt string, images []ImageData, params NewSequenceParams) (*(common.Sequence), error) {
 	s.ready.Wait()
 
 	startTime := time.Now()
@@ -106,13 +106,13 @@ func (s *Server) NewSequence(prompt string, images []ImageData, params NewSequen
 		return nil, errors.New("no input provided")
 	}
 
-	return genai.NewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict), nil
+	return common.NewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict), nil
 }
 
 func (s *Server) removeSequence(seqIndex int, reason string) {
 	seq := s.seqs[seqIndex]
 
-	genai.FlushPending(seq)
+	common.FlushPending(seq)
 	seq.SetDoneReason(reason)
 	seq.CloseResponses()
 	s.seqs[seqIndex] = nil
@@ -147,7 +147,7 @@ func (s *Server) processBatch() error {
 
 		seq.SetStartGenerationTime(time.Now())
 		for _, input := range seq.GetInputs() {
-			genai.GenerateTextWithMetrics(s.model, input.GetPrompt(), seq.GetSamplingParameters(), seq)
+			common.GenerateTextWithMetrics(s.model, input.GetPrompt(), seq.GetSamplingParameters(), seq)
 			// log.Printf("gen result: ", seq.GetpendingResponses())
 		}
 		s.removeSequence(i, "")
@@ -259,7 +259,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var samplingParams genai.SamplingParams
+	var samplingParams common.SamplingParams
 	samplingParams.TopK = req.Options.TopK
 	samplingParams.TopP = req.Options.TopP
 	samplingParams.Temp = req.Options.Temperature
@@ -386,7 +386,7 @@ func (s *Server) loadModel(mpath string, mname string, device string) {
 	tempDir := filepath.Join("/tmp", ov_ir_dir)
 	ov_model_path := ""
 
-	isGGUF, err := genai.IsGGUF(mpath)
+	isGGUF, err := common.IsGGUF(mpath)
 	if err != nil {
 		fmt.Printf("Error checking file: %v\n", err)
 		panic(err)
@@ -401,14 +401,14 @@ func (s *Server) loadModel(mpath string, mname string, device string) {
 				fmt.Errorf("Error creating dir: %v", err)
 				panic(err)
 			}
-			err = genai.CopyFile(mpath, ov_model_path)
+			err = common.CopyFile(mpath, ov_model_path)
 			if err != nil {
 				panic(err)
 			}
 		}
 	}
 
-	isGzip, err := genai.IsGzipByMagicBytes(mpath)
+	isGzip, err := common.IsGzipByMagicBytes(mpath)
 	if err != nil {
 		fmt.Printf("Error checking file: %v\n", err)
 	}
@@ -417,7 +417,7 @@ func (s *Server) loadModel(mpath string, mname string, device string) {
 		// for OpenVINO IR
 		_, err = os.Stat(tempDir)
 		if os.IsNotExist(err) {
-			err = genai.UnpackTarGz(mpath, tempDir)
+			err = common.UnpackTarGz(mpath, tempDir)
 			if err != nil {
 				panic(err)
 			}
@@ -434,7 +434,7 @@ func (s *Server) loadModel(mpath string, mname string, device string) {
 		ov_model_path = filepath.Join(tempDir, subdirs[0])
 	}
 
-	s.model = genai.CreatePipeline(ov_model_path, device)
+	s.model = common.CreatePipeline(ov_model_path, device)
 	log.Printf("The model had been load by GenAI, ov_model_path: %s , %s", ov_model_path, device)
 	s.status = ServerStatusReady
 	s.ready.Done()
@@ -476,7 +476,7 @@ func Execute(args []string) error {
 	slog.Info("starting go genairunner")
 
 	server := &Server{
-		seqs:   make([]*genai.Sequence, *parallel),
+		seqs:   make([]*common.Sequence, *parallel),
 		status: ServerStatusLoadingModel,
 	}
 

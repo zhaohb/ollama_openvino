@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ollama/ollama/genai/vlmrunner"
+	"github.com/ollama/ollama/genai/runner"
 )
 
 func main() {
-	if err := vlmrunner.Execute(os.Args); err != nil {
+	args := append([]string{os.Args[0], "--genai-vlm-engine"}, os.Args[1:]...)
+
+	if err := runner.Execute(args); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(1)
 	}
