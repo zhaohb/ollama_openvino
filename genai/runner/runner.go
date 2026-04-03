@@ -28,6 +28,7 @@ type NewSequenceParams struct {
 	numPredict     int
 	stop           []string
 	samplingParams *common.SamplingParams
+	tools          []api.Tool
 }
 
 type Server struct {
@@ -115,7 +116,7 @@ func (s *Server) NewSequence(prompt string, images []ImageData, params NewSequen
 		return nil, errors.New("no input provided")
 	}
 
-	return common.NewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict), nil
+	return common.NewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict, params.tools), nil
 }
 
 func (s *Server) removeSequence(seqIndex int, reason string) {
@@ -155,6 +156,12 @@ func (s *Server) processBatch() error {
 		}
 
 		seq.SetStartGenerationTime(time.Now())
+		if tools := seq.GetTools(); len(tools) > 0 {
+			log.Printf("tools available: %d", len(tools))
+			for _, t := range tools {
+				log.Printf("  tool: %s", t.Function.Name)
+			}
+		}
 		for _, input := range seq.GetInputs() {
 			log.Printf("gen prompt: %s", input.GetPrompt())
 			common.GenerateTextWithMetrics(s.model, input.GetPrompt(), seq.GetSamplingParameters(), seq)
@@ -202,6 +209,7 @@ type CompletionRequest struct {
 	Images      []ImageData `json:"image_data"`
 	Grammar     string      `json:"grammar"`
 	CachePrompt bool        `json:"cache_prompt"`
+	Tools       []api.Tool  `json:"tools,omitempty"`
 
 	Options *api.Options
 }
@@ -280,9 +288,9 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 	samplingParams.RepeatPenalty = req.Options.RepeatPenalty
 
 	seq, err := s.NewSequence(req.Prompt, req.Images, NewSequenceParams{
-		numPredict: req.Options.NumPredict,
-		// stop:           req.Stop,
+		numPredict:     req.Options.NumPredict,
 		samplingParams: &samplingParams,
+		tools:          req.Tools,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create new sequence: %v", err), http.StatusInternalServerError)

@@ -1459,6 +1459,7 @@ type CompletionRequest struct {
 	Format  json.RawMessage
 	Images  []ImageData
 	Options *api.Options
+	Tools   []api.Tool
 
 	Grammar  string // set before sending the request to the subprocess
 	Shift    bool

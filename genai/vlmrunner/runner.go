@@ -27,6 +27,7 @@ type NewSequenceParams struct {
 	numPredict     int
 	stop           []string
 	samplingParams *common.SamplingParams
+	tools          []api.Tool
 }
 
 type Server struct {
@@ -116,7 +117,7 @@ func (s *Server) NewSequence(prompt string, images []llamaserver.ImageData, para
 		return nil, errors.New("no input provided")
 	}
 
-	return common.VlmNewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict), nil
+	return common.VlmNewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict, params.tools), nil
 }
 
 func (s *Server) removeSequence(seqIndex int, reason string) {
@@ -202,6 +203,7 @@ type CompletionRequest struct {
 	Images      []llamaserver.ImageData `json:"image_data"`
 	Grammar     string                  `json:"grammar"`
 	CachePrompt bool                    `json:"cache_prompt"`
+	Tools       []api.Tool              `json:"tools,omitempty"`
 
 	Options *api.Options
 }
@@ -286,9 +288,9 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 	samplingParams.RepeatPenalty = req.Options.RepeatPenalty
 
 	seq, err := s.NewSequence(req.Prompt, req.Images, NewSequenceParams{
-		numPredict: req.Options.NumPredict,
-		// stop:           req.Stop,
+		numPredict:     req.Options.NumPredict,
 		samplingParams: &samplingParams,
+		tools:          req.Tools,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create new sequence: %v", err), http.StatusInternalServerError)

@@ -5,6 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ollama/ollama/api"
 	llamaserver "github.com/ollama/ollama/llm/llama"
 )
 
@@ -50,6 +51,9 @@ type Sequence struct {
 
 	doneReason string
 
+	// tools available for function calling
+	tools []api.Tool
+
 	// Metrics
 	startProcessingTime time.Time
 	startGenerationTime time.Time
@@ -84,13 +88,14 @@ func FlushPending(seq *Sequence) bool {
 }
 
 func NewSequence(inputs []Input, numPromptInputs int, startTime time.Time,
-	samplingParams *SamplingParams, numPredict int) *Sequence {
+	samplingParams *SamplingParams, numPredict int, tools []api.Tool) *Sequence {
 	return &Sequence{
 		inputs:              inputs,
 		numPromptInputs:     numPromptInputs,
 		startProcessingTime: startTime,
 		samplingparameters:  samplingParams,
 		numPredict:          numPredict,
+		tools:               tools,
 		pendingResponses:    make([]string, 0),
 		responses:           make(chan string, 100),
 		quit:                make(chan bool, 1),
@@ -98,13 +103,14 @@ func NewSequence(inputs []Input, numPromptInputs int, startTime time.Time,
 }
 
 func VlmNewSequence(inputs []VlmInput, numPromptInputs int, startTime time.Time,
-	samplingParams *SamplingParams, numPredict int) *Sequence {
+	samplingParams *SamplingParams, numPredict int, tools []api.Tool) *Sequence {
 	return &Sequence{
 		vlminputs:           inputs,
 		numPromptInputs:     numPromptInputs,
 		startProcessingTime: startTime,
 		samplingparameters:  samplingParams,
 		numPredict:          numPredict,
+		tools:               tools,
 		pendingResponses:    make([]string, 0),
 		responses:           make(chan string, 100),
 		quit:                make(chan bool, 1),
@@ -181,4 +187,8 @@ func (s *Sequence) GetStartProcessingTime() time.Time {
 
 func (s *Sequence) GetNumDecoded() int {
 	return s.numDecoded
+}
+
+func (s *Sequence) GetTools() []api.Tool {
+	return s.tools
 }

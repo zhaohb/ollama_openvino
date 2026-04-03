@@ -589,6 +589,7 @@ func (s *GenaillmServer) Completion(ctx context.Context, req llamaserver.Complet
 		"stop":              req.Options.Stop,
 		"image_data":        req.Images,
 		"cache_prompt":      true,
+		"tools":             req.Tools,
 	}
 
 	if len(req.Format) > 0 {

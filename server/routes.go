@@ -2815,6 +2815,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				Images:  images,
 				Format:  req.Format,
 				Options: opts,
+				Tools:   req.Tools,
 			}, func(cr llm.CompletionResponse) {
 				res := api.ChatResponse{
 					Model:     req.Model,
