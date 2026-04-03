@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -56,6 +57,9 @@ type Server struct {
 	// this is context state needed for decoding
 	mu sync.Mutex
 
+	// protects load operations
+	loadMu sync.Mutex
+
 	// indicates that data is ready for processing
 	cond *sync.Cond
 
@@ -68,6 +72,11 @@ type Server struct {
 
 	// next sequence for prompt processing to avoid starvation
 	nextSeq int
+
+	// model metadata for load operation
+	modelPath   string
+	modelName   string
+	inferDevice string
 }
 
 func (s *Server) allNil() bool {
@@ -235,11 +244,11 @@ func (s *Server) run(ctx context.Context) {
 }
 
 func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
-	// requestDump, err := httputil.DumpRequest(r, true)
-	// if err != nil {
-	// 	log.Println("Error dumping request:", err)
-	// }
-	// log.Printf("Request info :\n%s", requestDump)
+	requestDump, err := httputil.DumpRequest(r, true)
+	if err != nil {
+		log.Println("Error dumping request:", err)
+	}
+	log.Printf("Request info :\n%s", requestDump)
 
 	var req CompletionRequest
 	if req.Options == nil {
@@ -353,6 +362,7 @@ type ServerStatus int
 const (
 	ServerStatusReady ServerStatus = iota
 	ServerStatusLoadingModel
+	ServerStatusLaunched
 	ServerStatusError
 )
 
@@ -362,18 +372,84 @@ func (s ServerStatus) ToString() string {
 		return "ok"
 	case ServerStatusLoadingModel:
 		return "loading model"
+	case ServerStatusLaunched:
+		return "launched"
 	default:
 		return "server error"
 	}
 }
 
+// LoadRequest represents the request to load a model
+type LoadRequest struct {
+	ModelPath   string `json:"model_path"`
+	ShortName   string `json:"short_name"`
+	ModelType   string `json:"model_type"`
+	InferDevice string `json:"infer_device"`
+}
+
+// LoadResponse represents the response after loading a model
+type LoadResponse struct {
+	Success bool `json:"success"`
+}
+
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(&HealthResponse{
-		Status:   s.status.ToString(),
+
+	var llamaStatus llamaserver.ServerStatus
+	switch s.status {
+	case ServerStatusReady:
+		llamaStatus = llamaserver.ServerStatusReady
+	case ServerStatusLoadingModel:
+		llamaStatus = llamaserver.ServerStatusLoadingModel
+	case ServerStatusLaunched:
+		llamaStatus = llamaserver.ServerStatusLaunched
+	case ServerStatusError:
+		llamaStatus = llamaserver.ServerStatusError
+	default:
+		llamaStatus = llamaserver.ServerStatusError
+	}
+
+	if err := json.NewEncoder(w).Encode(&llamaserver.ServerStatusResponse{
+		Status:   llamaStatus,
 		Progress: s.progress,
 	}); err != nil {
 		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) load(w http.ResponseWriter, r *http.Request) {
+	s.loadMu.Lock()
+	defer s.loadMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var req LoadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("load", "request", req)
+
+	s.modelPath = req.ModelPath
+	s.modelName = req.ShortName
+	s.inferDevice = req.InferDevice
+
+	if s.status == ServerStatusLoadingModel || s.status == ServerStatusReady {
+		resp := LoadResponse{Success: true}
+		if err := json.NewEncoder(w).Encode(&resp); err != nil {
+			http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	s.status = ServerStatusLoadingModel
+	go s.loadModel(req.ModelPath, req.ShortName, req.InferDevice)
+
+	resp := LoadResponse{Success: true}
+	if err := json.NewEncoder(w).Encode(&resp); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -448,6 +524,8 @@ func Execute(args []string) error {
 		return err
 	}
 
+	log.Printf("Parsed flags - model: %s, modelname: %s, device: %s", *mpath, *mname, *device)
+
 	level := slog.LevelInfo
 	if *verbose {
 		level = slog.LevelDebug
@@ -468,11 +546,10 @@ func Execute(args []string) error {
 
 	server := &Server{
 		seqs:   make([]*common.Sequence, *parallel),
-		status: ServerStatusLoadingModel,
+		status: ServerStatusLaunched,
 	}
 
 	server.ready.Add(1)
-	go server.loadModel(*mpath, *mname, *device)
 
 	server.cond = sync.NewCond(&server.mu)
 
@@ -489,6 +566,7 @@ func Execute(args []string) error {
 	defer listener.Close()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /load", server.load)
 	mux.HandleFunc("/completion", server.completion)
 	mux.HandleFunc("/health", server.health)
 

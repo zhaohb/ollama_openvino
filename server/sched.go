@@ -460,7 +460,13 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		sessionDuration = req.sessionDuration.Duration
 	}
 
-	if req.modelbackend == "OpenVINO" {
+	log.Printf("req.model.ModelBackend: %s", req.model.ModelBackend)
+	log.Printf("req.model.ModelPath: %s", req.model.ModelPath)
+	log.Printf("req.model.ShortName: %s", req.model.ShortName)
+	log.Printf("req.model.ModelType: %s", req.model.ModelType)
+	log.Printf("req.model.InferDevice: %s", req.model.InferDevice)
+
+	if req.model.ModelBackend != "" && req.model.ModelBackend == "OpenVINO" {
 		s.loadedMu.Lock()
 		genai, err := s.newGenaiServerFn(gpus, req.model.ModelPath, req.model.ShortName, req.model.ModelType, req.model.InferDevice, nil, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
 		log.Printf("---model name: %s, %s", req.model.Name, req.model.ShortName)
@@ -479,8 +485,9 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			genai:           genai,
 			Options:         &req.opts,
 			sessionDuration: sessionDuration,
+			gpus:            []ml.DeviceID{},
 			loading:         true,
-			refCount:        1,
+			pid:             genai.Pid(),
 		}
 		runner.numParallel = numParallel
 		runner.refMu.Lock()
@@ -489,17 +496,28 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		slog.Info("loaded runners", "count", len(s.loaded))
 		s.loadedMu.Unlock()
 
+		err = genai.Load(req.ctx, gpus, requireFull, req.model.ModelPath, req.model.ShortName, req.model.ModelType, req.model.InferDevice)
+		if err != nil {
+			slog.Error("error loading genai server", "error", err)
+			req.errCh <- err
+			return false
+		}
+
 		go func() {
+
 			defer runner.refMu.Unlock()
 			if err = genai.WaitUntilRunning(req.ctx); err != nil {
 				slog.Error("error loading genai server", "error", err)
-				runner.refCount--
 				req.errCh <- err
-				slog.Debug("triggering expiration for failed load", "model", runner.modelPath)
+				slog.Debug("triggering expiration for failed load", "runner", runner)
 				s.expiredCh <- runner
 				return
 			}
-			slog.Debug("finished setting up runner", "model", req.model.ShortName)
+			slog.Debug("finished setting up", "runner", runner)
+			if runner.pid < 0 {
+				runner.pid = genai.Pid()
+			}
+			runner.refCount++
 			runner.loading = false
 			go func() {
 				<-req.ctx.Done()
