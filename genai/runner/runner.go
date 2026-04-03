@@ -441,6 +441,8 @@ func (s *Server) loadModel(mpath string, mname string, device string) {
 }
 
 func Execute(args []string) error {
+	log.Printf("LLM Execute called with args: %+v", args)
+
 	fs := flag.NewFlagSet("genairunner", flag.ExitOnError)
 	mpath := fs.String("model", "", "Path to model binary file")
 	mname := fs.String("modelname", "", "Name of the model")
@@ -453,9 +455,12 @@ func Execute(args []string) error {
 		fmt.Fprintf(fs.Output(), "Runner usage\n")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args[1:]); err != nil {
+
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	log.Printf("Parsed flags - model: %s, modelname: %s, device: %s", *mpath, *mname, *device)
 
 	level := slog.LevelInfo
 	if *verbose {

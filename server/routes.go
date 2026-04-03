@@ -31,6 +31,8 @@ import (
 	"golang.org/x/image/webp"
 	"golang.org/x/sync/errgroup"
 
+	"log"
+
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/auth"
 	"github.com/ollama/ollama/discover"
@@ -38,7 +40,9 @@ import (
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
+
 	"github.com/ollama/ollama/llm"
+	genaiserver "github.com/ollama/ollama/llm/genai"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/middleware"
@@ -178,6 +182,30 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 	}
 
 	return runner.llama, model, &opts, nil
+}
+
+func (s *Server) scheduleGenaiRunner(ctx context.Context, name string, modelbackend string, modeltype string, inferdevice string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration) (genaiserver.GenaiServer, *Model, *api.Options, error) {
+	if name == "" {
+		return nil, nil, nil, fmt.Errorf("model %w", errRequired)
+	}
+	model, err := GetModel(name)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	opts, err := s.modelOptions(model, requestOpts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	runnerCh, errCh := s.sched.GetOvRunner(ctx, model, opts, keepAlive)
+	var runner *runnerRef
+	select {
+	case runner = <-runnerCh:
+	case err = <-errCh:
+		return nil, nil, nil, err
+	}
+	return runner.genai, model, &opts, nil
 }
 
 func signinURL() (string, error) {
@@ -405,273 +433,359 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}
 	}
 
-	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
-	if errors.Is(err, errCapabilityCompletion) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
-		return
-	} else if err != nil {
-		handleScheduleError(c, req.Model, err)
-		return
-	}
+	log.Printf("GenerateHandler req: %+v", req)
 
-	checkpointLoaded := time.Now()
-
-	// load the model
-	if req.Prompt == "" {
-		c.JSON(http.StatusOK, api.GenerateResponse{
-			Model:      req.Model,
-			CreatedAt:  time.Now().UTC(),
-			Done:       true,
-			DoneReason: "load",
-		})
-		return
-	}
-
-	if slices.Contains(m.Config.ModelFamilies, "mllama") && len(req.Images) > 1 {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "this model only supports one image while more than one image requested"})
-		return
-	}
-
-	images := make([]llm.ImageData, len(req.Images))
-	for i := range req.Images {
-		images[i] = llm.ImageData{ID: i, Data: req.Images[i]}
-	}
-
-	prompt := req.Prompt
-	if !req.Raw {
-		tmpl := m.Template
-		if req.Template != "" {
-			tmpl, err = template.Parse(req.Template)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
+	if m.ModelBackend != "OpenVINO" {
+		r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive)
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
+			return
+		} else if err != nil {
+			handleScheduleError(c, req.Model, err)
+			return
 		}
 
-		var values template.Values
-		if req.Suffix != "" {
-			values.Prompt = prompt
-			values.Suffix = req.Suffix
-		} else {
-			var msgs []api.Message
-			if req.System != "" {
-				msgs = append(msgs, api.Message{Role: "system", Content: req.System})
-			} else if m.System != "" {
-				msgs = append(msgs, api.Message{Role: "system", Content: m.System})
-			}
+		checkpointLoaded := time.Now()
 
-			if req.Context == nil {
-				msgs = append(msgs, m.Messages...)
-			}
-
-			userMsg := api.Message{Role: "user", Content: req.Prompt}
-			for _, i := range images {
-				userMsg.Images = append(userMsg.Images, i.Data)
-			}
-			values.Messages = append(msgs, userMsg)
+		if req.Prompt == "" {
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Done:       true,
+				DoneReason: "load",
+			})
+			return
 		}
 
-		values.Think = req.Think != nil && req.Think.Bool()
-		values.ThinkLevel = ""
-		if req.Think != nil {
-			values.ThinkLevel = req.Think.String()
-		}
-		values.IsThinkSet = req.Think != nil
-
-		var b bytes.Buffer
-		if req.Context != nil {
-			slog.Warn("the context field is deprecated and will be removed in a future version of Ollama")
-			s, err := r.Detokenize(c.Request.Context(), req.Context)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			b.WriteString(s)
+		if slices.Contains(m.Config.ModelFamilies, "mllama") && len(req.Images) > 1 {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "this model only supports one image while more than one image requested"})
+			return
 		}
 
-		// check that we're in the `api/chat`-like flow, and if so, generate the
-		// prompt the same way
-		// TEMP(drifkin): we should really just detect the chat-like flow and call
-		// the real chat handler, but doing this as a stopgap to get renderer
-		// support for generate
-		if values.Messages != nil && values.Suffix == "" && req.Template == "" {
-			genTruncate := (req.Truncate == nil || *req.Truncate) && !m.IsMLX()
-			prompt, images, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			// TEMP(drifkin): req.Context will be removed very soon, but we're temporarily supporting it in this flow here
-			if req.Context != nil {
-				b.WriteString(prompt)
-				prompt = b.String()
-			}
-		} else {
-			// legacy flow
-			if err := tmpl.Execute(&b, values); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			prompt = b.String()
+		images := make([]llm.ImageData, len(req.Images))
+		for i := range req.Images {
+			images[i] = llm.ImageData{ID: i, Data: req.Images[i]}
 		}
-	}
 
-	// If debug mode is enabled, return the rendered template instead of calling the model
-	if req.DebugRenderOnly {
-		c.JSON(http.StatusOK, api.GenerateResponse{
-			Model:     req.Model,
-			CreatedAt: time.Now().UTC(),
-			DebugInfo: &api.DebugInfo{
-				RenderedTemplate: prompt,
-				ImageCount:       len(images),
-			},
-		})
-		return
-	}
-
-	var thinkingState *thinking.Parser
-	if builtinParser == nil {
-		openingTag, closingTag := thinking.InferTags(m.Template.Template)
-		if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
-			thinkingState = &thinking.Parser{
-				OpeningTag: openingTag,
-				ClosingTag: closingTag,
-			}
-			if strings.HasSuffix(strings.TrimSpace(prompt), openingTag) {
-				thinkingState.AddContent(openingTag)
-			}
-		}
-	}
-
-	ch := make(chan any)
-	go func() {
-		// TODO (jmorganca): avoid building the response twice both here and below
-		var sb strings.Builder
-		defer close(ch)
-		if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
-			Prompt:      prompt,
-			Images:      images,
-			Format:      req.Format,
-			Options:     opts,
-			Shift:       req.Shift == nil || *req.Shift,
-			Truncate:    req.Truncate == nil || *req.Truncate,
-			Logprobs:    req.Logprobs,
-			TopLogprobs: req.TopLogprobs,
-		}, func(cr llm.CompletionResponse) {
-			res := api.GenerateResponse{
-				Model:     req.Model,
-				CreatedAt: time.Now().UTC(),
-				Response:  cr.Content,
-				Done:      cr.Done,
-				Metrics: api.Metrics{
-					PromptEvalCount:    cr.PromptEvalCount,
-					PromptEvalDuration: cr.PromptEvalDuration,
-					EvalCount:          cr.EvalCount,
-					EvalDuration:       cr.EvalDuration,
-				},
-				Logprobs: toAPILogprobs(cr.Logprobs),
-			}
-
-			if builtinParser != nil {
-				content, thinking, toolCalls, err := builtinParser.Add(cr.Content, cr.Done)
+		prompt := req.Prompt
+		if !req.Raw {
+			tmpl := m.Template
+			if req.Template != "" {
+				tmpl, err = template.Parse(req.Template)
 				if err != nil {
-					ch <- gin.H{"error": err.Error()}
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 					return
 				}
-				res.Response = content
-				res.Thinking = thinking
-				if cr.Done && len(toolCalls) > 0 {
-					res.ToolCalls = toolCalls
+			}
+
+			var values template.Values
+			if req.Suffix != "" {
+				values.Prompt = prompt
+				values.Suffix = req.Suffix
+			} else {
+				var msgs []api.Message
+				if req.System != "" {
+					msgs = append(msgs, api.Message{Role: "system", Content: req.System})
+				} else if m.System != "" {
+					msgs = append(msgs, api.Message{Role: "system", Content: m.System})
 				}
-			} else if thinkingState != nil {
-				thinking, content := thinkingState.AddContent(cr.Content)
-				res.Thinking = thinking
-				res.Response = content
+
+				if req.Context == nil {
+					msgs = append(msgs, m.Messages...)
+				}
+
+				userMsg := api.Message{Role: "user", Content: req.Prompt}
+				for _, i := range images {
+					userMsg.Images = append(userMsg.Images, i.Data)
+				}
+				values.Messages = append(msgs, userMsg)
 			}
 
-			if _, err := sb.WriteString(cr.Content); err != nil {
-				ch <- gin.H{"error": err.Error()}
+			values.Think = req.Think != nil && req.Think.Bool()
+			values.ThinkLevel = ""
+			if req.Think != nil {
+				values.ThinkLevel = req.Think.String()
+			}
+			values.IsThinkSet = req.Think != nil
+
+			var b bytes.Buffer
+			if req.Context != nil {
+				slog.Warn("the context field is deprecated and will be removed in a future version of Ollama")
+				s, err := r.Detokenize(c.Request.Context(), req.Context)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				b.WriteString(s)
 			}
 
-			if cr.Done {
-				res.DoneReason = cr.DoneReason.String()
-				res.TotalDuration = time.Since(checkpointStart)
-				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+			if values.Messages != nil && values.Suffix == "" && req.Template == "" {
+				genTruncate := (req.Truncate == nil || *req.Truncate) && !m.IsMLX()
+				prompt, images, err = chatPrompt(c.Request.Context(), m, r.Tokenize, opts, values.Messages, []api.Tool{}, req.Think, genTruncate)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				if req.Context != nil {
+					b.WriteString(prompt)
+					prompt = b.String()
+				}
+			} else {
+				if err := tmpl.Execute(&b, values); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
 
-				if !req.Raw {
-					tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
+				prompt = b.String()
+			}
+		}
+
+		if req.DebugRenderOnly {
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				DebugInfo: &api.DebugInfo{
+					RenderedTemplate: prompt,
+					ImageCount:       len(images),
+				},
+			})
+			return
+		}
+
+		var thinkingState *thinking.Parser
+		if builtinParser == nil {
+			openingTag, closingTag := thinking.InferTags(m.Template.Template)
+			if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
+				thinkingState = &thinking.Parser{
+					OpeningTag: openingTag,
+					ClosingTag: closingTag,
+				}
+				if strings.HasSuffix(strings.TrimSpace(prompt), openingTag) {
+					thinkingState.AddContent(openingTag)
+				}
+			}
+		}
+
+		ch := make(chan any)
+		go func() {
+			var sb strings.Builder
+			defer close(ch)
+			if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
+				Prompt:      prompt,
+				Images:      images,
+				Format:      req.Format,
+				Options:     opts,
+				Shift:       req.Shift == nil || *req.Shift,
+				Truncate:    req.Truncate == nil || *req.Truncate,
+				Logprobs:    req.Logprobs,
+				TopLogprobs: req.TopLogprobs,
+			}, func(cr llm.CompletionResponse) {
+				res := api.GenerateResponse{
+					Model:     req.Model,
+					CreatedAt: time.Now().UTC(),
+					Response:  cr.Content,
+					Done:      cr.Done,
+					Metrics: api.Metrics{
+						PromptEvalCount:    cr.PromptEvalCount,
+						PromptEvalDuration: cr.PromptEvalDuration,
+						EvalCount:          cr.EvalCount,
+						EvalDuration:       cr.EvalDuration,
+					},
+					Logprobs: toAPILogprobs(cr.Logprobs),
+				}
+
+				if builtinParser != nil {
+					content, thinking, toolCalls, err := builtinParser.Add(cr.Content, cr.Done)
 					if err != nil {
 						ch <- gin.H{"error": err.Error()}
 						return
 					}
-					res.Context = tokens
+					res.Response = content
+					res.Thinking = thinking
+					if cr.Done && len(toolCalls) > 0 {
+						res.ToolCalls = toolCalls
+					}
+				} else if thinkingState != nil {
+					thinking, content := thinkingState.AddContent(cr.Content)
+					res.Thinking = thinking
+					res.Response = content
+				}
+
+				if _, err := sb.WriteString(cr.Content); err != nil {
+					ch <- gin.H{"error": err.Error()}
+				}
+
+				if cr.Done {
+					res.DoneReason = cr.DoneReason.String()
+					res.TotalDuration = time.Since(checkpointStart)
+					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+
+					if !req.Raw {
+						tokens, err := r.Tokenize(c.Request.Context(), prompt+sb.String())
+						if err != nil {
+							ch <- gin.H{"error": err.Error()}
+							return
+						}
+						res.Context = tokens
+					}
+				}
+
+				if builtinParser != nil {
+					if res.Response != "" || res.Thinking != "" || res.Done || len(res.ToolCalls) > 0 {
+						ch <- res
+					}
+					return
+				}
+
+				ch <- res
+			}); err != nil {
+				var serr api.StatusError
+				if errors.As(err, &serr) {
+					ch <- gin.H{"error": serr.ErrorMessage, "status": serr.StatusCode}
+				} else {
+					ch <- gin.H{"error": err.Error()}
+				}
+			}
+		}()
+
+		if req.Stream != nil && !*req.Stream {
+			var r api.GenerateResponse
+			var allLogprobs []api.Logprob
+			var sbThinking strings.Builder
+			var sbContent strings.Builder
+			for rr := range ch {
+				switch t := rr.(type) {
+				case api.GenerateResponse:
+					sbThinking.WriteString(t.Thinking)
+					sbContent.WriteString(t.Response)
+					r = t
+					if len(t.Logprobs) > 0 {
+						allLogprobs = append(allLogprobs, t.Logprobs...)
+					}
+				case gin.H:
+					msg, ok := t["error"].(string)
+					if !ok {
+						msg = "unexpected error format in response"
+					}
+
+					status, ok := t["status"].(int)
+					if !ok {
+						status = http.StatusInternalServerError
+					}
+
+					c.JSON(status, gin.H{"error": msg})
+					return
+				default:
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
+					return
 				}
 			}
 
-			if builtinParser != nil {
-				// only send messages with meaningful content (empty messages confuse clients)
-				if res.Response != "" || res.Thinking != "" || res.Done || len(res.ToolCalls) > 0 {
-					ch <- res
+			r.Thinking = sbThinking.String()
+			r.Response = sbContent.String()
+			r.Logprobs = allLogprobs
+
+			c.JSON(http.StatusOK, r)
+			return
+		}
+
+		streamResponse(c, ch)
+	} else {
+		log.Printf("GenerateHandler model: %+v", m)
+		log.Printf("GenerateHandler model backend: %s", m.ModelBackend)
+		log.Printf("GenerateHandler model type: %s", m.ModelType)
+		log.Printf("GenerateHandler model infer device: %s", m.InferDevice)
+
+		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), m.ModelBackend, m.ModelType, m.InferDevice, caps, req.Options, req.KeepAlive)
+
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
+			return
+		} else if err != nil {
+			handleScheduleError(c, req.Model, err)
+			return
+		}
+
+		checkpointLoaded := time.Now()
+
+		if req.Prompt == "" {
+			c.JSON(http.StatusOK, api.GenerateResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Done:       true,
+				DoneReason: "load",
+			})
+			return
+		}
+		prompt := req.Prompt
+		ch := make(chan any)
+
+		go func() {
+			var sb strings.Builder
+			defer close(ch)
+			if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
+				Prompt:  prompt,
+				Images:  nil,
+				Format:  req.Format,
+				Options: opts,
+			}, func(cr llm.CompletionResponse) {
+				res := api.GenerateResponse{
+					Model:     req.Model,
+					CreatedAt: time.Now().UTC(),
+					Response:  cr.Content,
+					Done:      cr.Done,
+					Metrics: api.Metrics{
+						PromptEvalCount:    cr.PromptEvalCount,
+						PromptEvalDuration: cr.PromptEvalDuration,
+						EvalCount:          cr.EvalCount,
+						EvalDuration:       cr.EvalDuration,
+					},
 				}
 
-				return
-			}
+				if _, err := sb.WriteString(cr.Content); err != nil {
+					ch <- gin.H{"error": err.Error()}
+				}
 
-			ch <- res
-		}); err != nil {
-			var serr api.StatusError
-			if errors.As(err, &serr) {
-				ch <- gin.H{"error": serr.ErrorMessage, "status": serr.StatusCode}
-			} else {
+				if cr.Done {
+					res.TotalDuration = time.Since(checkpointStart)
+					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+				}
+
+				ch <- res
+			}); err != nil {
 				ch <- gin.H{"error": err.Error()}
 			}
-		}
-	}()
+		}()
 
-	if req.Stream != nil && !*req.Stream {
-		var r api.GenerateResponse
-		var allLogprobs []api.Logprob
-		var sbThinking strings.Builder
-		var sbContent strings.Builder
-		for rr := range ch {
-			switch t := rr.(type) {
-			case api.GenerateResponse:
-				sbThinking.WriteString(t.Thinking)
-				sbContent.WriteString(t.Response)
-				r = t
-				// Accumulate logprobs from all chunks for non-streaming response
-				if len(t.Logprobs) > 0 {
-					allLogprobs = append(allLogprobs, t.Logprobs...)
-				}
-			case gin.H:
-				msg, ok := t["error"].(string)
-				if !ok {
-					msg = "unexpected error format in response"
-				}
+		if req.Stream != nil && !*req.Stream {
+			var r api.GenerateResponse
+			var sb strings.Builder
+			for rr := range ch {
+				switch t := rr.(type) {
+				case api.GenerateResponse:
+					sb.WriteString(t.Response)
+					r = t
+				case gin.H:
+					msg, ok := t["error"].(string)
+					if !ok {
+						msg = "unexpected error format in response"
+					}
 
-				status, ok := t["status"].(int)
-				if !ok {
-					status = http.StatusInternalServerError
+					c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
+					return
+				default:
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
+					return
 				}
-
-				c.JSON(status, gin.H{"error": msg})
-				return
-			default:
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected response"})
-				return
 			}
+
+			r.Response = sb.String()
+			c.JSON(http.StatusOK, r)
+			return
 		}
 
-		r.Thinking = sbThinking.String()
-		r.Response = sbContent.String()
-		r.Logprobs = allLogprobs
-
-		c.JSON(http.StatusOK, r)
-		return
+		streamResponse(c, ch)
 	}
-
-	streamResponse(c, ch)
 }
 
 func (s *Server) EmbedHandler(c *gin.Context) {
@@ -1339,6 +1453,14 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 				resp.Tensors = tensors
 			}
 		}
+		return resp, nil
+	}
+
+	if m.ModelBackend == "OpenVINO" {
+		resp.ModelType = m.ModelType
+		resp.InferDevice = m.InferDevice
+		resp.ModelBackend = m.ModelBackend
+		log.Printf("GetModelInfo OpenVINO resp: %+v", resp)
 		return resp, nil
 	}
 

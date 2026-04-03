@@ -12,12 +12,15 @@ import (
 	"sync"
 	"time"
 
+	"log"
+
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llm"
+	genaillm "github.com/ollama/ollama/llm/genai"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/types/model"
@@ -26,13 +29,16 @@ import (
 )
 
 type LlmRequest struct {
-	ctx             context.Context //nolint:containedctx
-	model           *Model
-	opts            api.Options
-	sessionDuration *api.Duration
-	successCh       chan *runnerRef
-	errCh           chan error
-	schedAttempts   uint
+	ctx              context.Context //nolint:containedctx
+	model            *Model
+	modeltype        string
+	modelbackend     string
+	modelinferdevice string
+	opts             api.Options
+	sessionDuration  *api.Duration
+	successCh        chan *runnerRef
+	errCh            chan error
+	schedAttempts    uint
 }
 
 type Scheduler struct {
@@ -51,11 +57,12 @@ type Scheduler struct {
 	activeLoading llm.LlamaServer
 	loaded        map[string]*runnerRef
 
-	loadFn          func(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) bool
-	newServerFn     func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error)
-	getGpuFn        func(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.DeviceInfo
-	getSystemInfoFn func() ml.SystemInfo
-	waitForRecovery time.Duration
+	loadFn           func(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) bool
+	newServerFn      func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error)
+	newGenaiServerFn func(gpus []ml.DeviceInfo, model string, modelname string, modeltype string, inferdevice string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (genaillm.GenaiServer, error)
+	getGpuFn         func(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.DeviceInfo
+	getSystemInfoFn  func() ml.SystemInfo
+	waitForRecovery  time.Duration
 }
 
 // Default automatic value for number of models we allow per GPU
@@ -68,15 +75,16 @@ var ErrMaxQueue = errors.New("server busy, please try again.  maximum pending re
 func InitScheduler(ctx context.Context) *Scheduler {
 	maxQueue := envconfig.MaxQueue()
 	sched := &Scheduler{
-		pendingReqCh:    make(chan *LlmRequest, maxQueue),
-		finishedReqCh:   make(chan *LlmRequest, maxQueue),
-		expiredCh:       make(chan *runnerRef, maxQueue),
-		unloadedCh:      make(chan any, maxQueue),
-		loaded:          make(map[string]*runnerRef),
-		newServerFn:     llm.NewLlamaServer,
-		getGpuFn:        discover.GPUDevices,
-		getSystemInfoFn: discover.GetSystemInfo,
-		waitForRecovery: 5 * time.Second,
+		pendingReqCh:     make(chan *LlmRequest, maxQueue),
+		finishedReqCh:    make(chan *LlmRequest, maxQueue),
+		expiredCh:        make(chan *runnerRef, maxQueue),
+		unloadedCh:       make(chan any, maxQueue),
+		loaded:           make(map[string]*runnerRef),
+		newServerFn:      llm.NewLlamaServer,
+		newGenaiServerFn: genaillm.NewGenaiServer,
+		getGpuFn:         discover.GPUDevices,
+		getSystemInfoFn:  discover.GetSystemInfo,
+		waitForRecovery:  5 * time.Second,
 	}
 	sched.loadFn = sched.load
 	return sched
@@ -102,6 +110,30 @@ func schedulerModelKey(m *Model) string {
 		return "short:" + m.ShortName
 	}
 	return ""
+}
+
+func (s *Scheduler) GetOvRunner(c context.Context, model *Model, opts api.Options, sessionDuration *api.Duration) (chan *runnerRef, chan error) {
+	if opts.NumCtx < 4 {
+		opts.NumCtx = 4
+	}
+
+	req := &LlmRequest{
+		ctx:              c,
+		model:            model,
+		modeltype:        model.ModelType,
+		modelbackend:     model.ModelBackend,
+		modelinferdevice: model.InferDevice,
+		sessionDuration:  sessionDuration,
+		opts:             opts,
+		successCh:        make(chan *runnerRef),
+		errCh:            make(chan error, 1),
+	}
+	select {
+	case s.pendingReqCh <- req:
+	default:
+		req.errCh <- ErrMaxQueue
+	}
+	return req.successCh, req.errCh
 }
 
 // context must be canceled to decrement ref count and release the runner
@@ -428,6 +460,57 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		sessionDuration = req.sessionDuration.Duration
 	}
 
+	if req.modelbackend == "OpenVINO" {
+		s.loadedMu.Lock()
+		genai, err := s.newGenaiServerFn(gpus, req.model.ModelPath, req.model.ShortName, req.model.ModelType, req.model.InferDevice, nil, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
+		log.Printf("---model name: %s, %s", req.model.Name, req.model.ShortName)
+		if err != nil {
+			slog.Info("NewGenaiServer failed", "model", req.model.ModelPath, "error", err)
+			req.errCh <- err
+			s.loadedMu.Unlock()
+			return false
+		}
+
+		modelKey := schedulerModelKey(req.model)
+		runner := &runnerRef{
+			model:           req.model,
+			modelPath:       req.model.ModelPath,
+			modelKey:        modelKey,
+			genai:           genai,
+			Options:         &req.opts,
+			sessionDuration: sessionDuration,
+			loading:         true,
+			refCount:        1,
+		}
+		runner.numParallel = numParallel
+		runner.refMu.Lock()
+
+		s.loaded[modelKey] = runner
+		slog.Info("loaded runners", "count", len(s.loaded))
+		s.loadedMu.Unlock()
+
+		go func() {
+			defer runner.refMu.Unlock()
+			if err = genai.WaitUntilRunning(req.ctx); err != nil {
+				slog.Error("error loading genai server", "error", err)
+				runner.refCount--
+				req.errCh <- err
+				slog.Debug("triggering expiration for failed load", "model", runner.modelPath)
+				s.expiredCh <- runner
+				return
+			}
+			slog.Debug("finished setting up runner", "model", req.model.ShortName)
+			runner.loading = false
+			go func() {
+				<-req.ctx.Done()
+				slog.Debug("context for request finished")
+				s.finishedReqCh <- req
+			}()
+			req.successCh <- runner
+		}()
+		return false
+	}
+
 	s.loadedMu.Lock()
 	llama := s.activeLoading
 
@@ -443,9 +526,6 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			}
 			llama, err = s.newServerFn(systemInfo, gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
 			if err != nil {
-				// some older models are not compatible with newer versions of llama.cpp
-				// show a generalized compatibility error until there is a better way to
-				// check for model compatibility
 				if errors.Is(err, ggml.ErrUnsupportedFormat) || strings.Contains(err.Error(), "failed to load model") {
 					err = fmt.Errorf("%v: this model may be incompatible with your version of Ollama. If you previously pulled this model, try updating it by running `ollama pull %s`", err, req.model.ShortName)
 				}
@@ -499,7 +579,6 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 	if err != nil {
 		if errors.Is(err, llm.ErrLoadRequiredFull) {
 			if !requireFull {
-				// No other models loaded, yet we still don't fit, so report an error
 				slog.Info("model is too large for system memory", "requireFull", requireFull)
 				s.activeLoading.Close()
 				s.activeLoading = nil
@@ -515,7 +594,6 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		return false
 	}
 
-	// Determine if we have discrete GPUs which we should monitor VRAM usage on during shutdown
 	discreteGPUs := false
 iGPUScan:
 	for _, devid := range gpuIDs {
@@ -546,11 +624,10 @@ iGPUScan:
 		pid:             llama.Pid(),
 	}
 	runner.numParallel = numParallel
-	runner.refMu.Lock() // hold lock until running or aborted
+	runner.refMu.Lock()
 
 	s.loadedMu.Lock()
 	if oldRunner, ok := s.loaded[runner.modelKey]; ok {
-		// Shouldn't happen, but safeguard against leaking a runner
 		slog.Warn("model was still loaded", "old_runner", oldRunner, "new_runner", runner)
 		oldRunner.refMu.Lock()
 		oldRunner.unload()
@@ -635,6 +712,7 @@ type runnerRef struct {
 	refCount uint // prevent unloading if > 0
 
 	llama        llm.LlamaServer
+	genai        genaillm.GenaiServer
 	pid          int
 	loading      bool          // True only during initial load, then false forever
 	gpus         []ml.DeviceID // Recorded at time of provisioning

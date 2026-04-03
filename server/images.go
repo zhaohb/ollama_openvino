@@ -68,6 +68,9 @@ type Model struct {
 	Digest         string
 	Options        map[string]any
 	Messages       []api.Message
+	ModelBackend   string
+	ModelType      string
+	InferDevice    string
 
 	Template *template.Template
 }
@@ -80,7 +83,13 @@ func (m *Model) IsMLX() bool {
 func (m *Model) Capabilities() []model.Capability {
 	capabilities := []model.Capability{}
 
-	if m.ModelPath != "" {
+	if m.ModelBackend == "OpenVINO" {
+		if m.ModelType == "VLM" {
+			capabilities = append(capabilities, model.CapabilityCompletion, model.CapabilityVision)
+		} else {
+			capabilities = append(capabilities, model.CapabilityCompletion)
+		}
+	} else if m.ModelPath != "" {
 		f, err := gguf.Open(m.ModelPath)
 		if err == nil {
 			defer f.Close()
@@ -88,7 +97,6 @@ func (m *Model) Capabilities() []model.Capability {
 			if f.KeyValue("pooling_type").Valid() {
 				capabilities = append(capabilities, model.CapabilityEmbedding)
 			} else {
-				// If no embedding is specified, we assume the model supports completion
 				capabilities = append(capabilities, model.CapabilityCompletion)
 			}
 			if f.KeyValue("vision.block_count").Valid() {
@@ -335,6 +343,24 @@ func GetModel(name string) (*Model, error) {
 		case "application/vnd.ollama.image.model":
 			m.ModelPath = filename
 			m.ParentModel = layer.From
+		case "application/vnd.ollama.image.modeltype":
+			bts, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, err
+			}
+			m.ModelType = string(bts)
+		case "application/vnd.ollama.image.inferdevice":
+			bts, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, err
+			}
+			m.InferDevice = string(bts)
+		case "application/vnd.ollama.image.modelbackend":
+			bts, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, err
+			}
+			m.ModelBackend = string(bts)
 		case "application/vnd.ollama.image.embed":
 			// Deprecated in versions  > 0.1.2
 			// TODO: remove this warning in a future version

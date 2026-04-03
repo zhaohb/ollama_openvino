@@ -19,7 +19,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/genai/common"
-	"github.com/ollama/ollama/llm"
+	llamaserver "github.com/ollama/ollama/llm/llama"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -79,7 +79,7 @@ func (s *Server) allNil() bool {
 	return true
 }
 
-func (s *Server) inputs(prompt string, images []llm.ImageData) ([]common.VlmInput, error) {
+func (s *Server) inputs(prompt string, images []llamaserver.ImageData) ([]common.VlmInput, error) {
 	var inputs []common.VlmInput
 	var parts []string
 
@@ -96,7 +96,7 @@ func (s *Server) inputs(prompt string, images []llm.ImageData) ([]common.VlmInpu
 	return inputs, nil
 }
 
-func (s *Server) NewSequence(prompt string, images []llm.ImageData, params NewSequenceParams) (*(common.Sequence), error) {
+func (s *Server) NewSequence(prompt string, images []llamaserver.ImageData, params NewSequenceParams) (*(common.Sequence), error) {
 	s.ready.Wait()
 
 	startTime := time.Now()
@@ -190,10 +190,10 @@ type Options struct {
 // }
 
 type CompletionRequest struct {
-	Prompt      string          `json:"prompt"`
-	Images      []llm.ImageData `json:"image_data"`
-	Grammar     string          `json:"grammar"`
-	CachePrompt bool            `json:"cache_prompt"`
+	Prompt      string                  `json:"prompt"`
+	Images      []llamaserver.ImageData `json:"image_data"`
+	Grammar     string                  `json:"grammar"`
+	CachePrompt bool                    `json:"cache_prompt"`
 
 	Options *api.Options
 }
@@ -391,6 +391,7 @@ func (m *multiLPath) String() string {
 func (s *Server) loadModel(mpath string, mname string, device string) {
 	var err error
 	ov_ir_dir := strings.ReplaceAll(mname, ":", "_")
+	log.Printf("ov_ir_dir: %s\n", ov_ir_dir)
 	tempDir := filepath.Join("/tmp", ov_ir_dir)
 	ov_model_path := ""
 
@@ -429,6 +430,8 @@ func (s *Server) loadModel(mpath string, mname string, device string) {
 }
 
 func Execute(args []string) error {
+	log.Printf("VLM Execute called with args: %+v", args)
+
 	fs := flag.NewFlagSet("genairunner", flag.ExitOnError)
 	mpath := fs.String("model", "", "Path to model binary file")
 	mname := fs.String("modelname", "", "Name of the model")
@@ -441,7 +444,7 @@ func Execute(args []string) error {
 		fmt.Fprintf(fs.Output(), "Runner usage\n")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
