@@ -720,7 +720,7 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 	opts.InferDevice = info.InferDevice
 	opts.ModelBackend = info.ModelBackend
 
-	log.Printf("Initial opts: %+v", opts)
+	// log.Printf("Initial opts: %+v", opts)
 
 	// Check if this is an embedding model
 	isEmbeddingModel := slices.Contains(info.Capabilities, model.CapabilityEmbedding)
