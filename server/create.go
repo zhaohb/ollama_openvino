@@ -351,6 +351,23 @@ func convertModelFromFiles(files map[string]string, baseLayers []*layerGGML, isA
 			allLayers = append(allLayers, layers...)
 		}
 		return allLayers, nil
+	case "openvino":
+		if len(files) == 0 {
+			return nil, errNoFilesProvided
+		} else if len(files) > 1 && isAdapter {
+			return nil, errOnlyOneAdapterSupported
+		}
+		var digest string
+		var allLayers []*layerGGML
+		for _, v := range files {
+			digest = v
+			layers, err := ovLayers(digest, fn)
+			if err != nil {
+				return nil, err
+			}
+			allLayers = append(allLayers, layers...)
+		}
+		return allLayers, nil
 	default:
 		return nil, errUnknownType
 	}
@@ -362,6 +379,8 @@ func detectModelTypeFromFiles(files map[string]string) string {
 			return "safetensors"
 		} else if strings.HasSuffix(fn, ".gguf") {
 			return "gguf"
+		} else if strings.HasSuffix(fn, ".tar.gz") {
+			return "openvino"
 		} else {
 			// try to see if we can find a gguf file even without the file extension
 			blobPath, err := manifest.BlobsPath(files[fn])
@@ -548,6 +567,20 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 		}
 	}
 
+	if r.ModelType != "" {
+		layers, err = setModelType(layers, r.ModelType)
+		if err != nil {
+			return err
+		}
+	}
+
+	if r.InferDevice != "" {
+		layers, err = setInferDevice(layers, r.InferDevice)
+		if err != nil {
+			return err
+		}
+	}
+
 	if r.License != nil {
 		switch l := r.License.(type) {
 		case string:
@@ -655,6 +688,57 @@ func quantizeLayer(layer *layerGGML, quantizeType string, fn func(resp api.Progr
 	return &layerGGML{newLayer, f}, nil
 }
 
+func ovLayers(digest string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
+	var layers []*layerGGML
+
+	blobPath, err := manifest.BlobsPath(digest)
+	if err != nil {
+		return nil, err
+	}
+
+	blob, err := os.Open(blobPath)
+	if err != nil {
+		return nil, err
+	}
+	defer blob.Close()
+
+	stat, err := blob.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	var offset int64
+	for offset < stat.Size() {
+		var n int64 = stat.Size()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+
+		mediatype := "application/vnd.ollama.image.model"
+
+		var layer manifest.Layer
+		if digest != "" && n == stat.Size() && offset == 0 {
+			layer, err = manifest.NewLayerFromLayer(digest, mediatype, blob.Name())
+			if err != nil {
+				slog.Debug("could not create new layer from layer", "error", err)
+				return nil, err
+			}
+		}
+		if layer.Digest == "" {
+			layer, err = manifest.NewLayer(io.NewSectionReader(blob, offset, n), mediatype)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		layers = append(layers, &layerGGML{layer, nil})
+		offset = n
+	}
+	return layers, nil
+}
+
 func ggufLayers(digest string, fn func(resp api.ProgressResponse)) ([]*layerGGML, error) {
 	var layers []*layerGGML
 
@@ -744,6 +828,32 @@ func setSystem(layers []manifest.Layer, s string) ([]manifest.Layer, error) {
 	if s != "" {
 		blob := strings.NewReader(s)
 		layer, err := manifest.NewLayer(blob, "application/vnd.ollama.image.system")
+		if err != nil {
+			return nil, err
+		}
+		layers = append(layers, layer)
+	}
+	return layers, nil
+}
+
+func setModelType(layers []manifest.Layer, s string) ([]manifest.Layer, error) {
+	layers = removeLayer(layers, "application/vnd.ollama.image.modeltype")
+	if s != "" {
+		blob := strings.NewReader(s)
+		layer, err := manifest.NewLayer(blob, "application/vnd.ollama.image.modeltype")
+		if err != nil {
+			return nil, err
+		}
+		layers = append(layers, layer)
+	}
+	return layers, nil
+}
+
+func setInferDevice(layers []manifest.Layer, s string) ([]manifest.Layer, error) {
+	layers = removeLayer(layers, "application/vnd.ollama.image.inferdevice")
+	if s != "" {
+		blob := strings.NewReader(s)
+		layer, err := manifest.NewLayer(blob, "application/vnd.ollama.image.inferdevice")
 		if err != nil {
 			return nil, err
 		}

@@ -64,6 +64,10 @@ type GenerateRequest struct {
 	// the library at https://ollama.com/library
 	Model string `json:"model"`
 
+	ModelType string `json:"modeltype"`
+
+	InferDevice string `json:"inferdevice"`
+
 	// Prompt is the textual prompt to send to the model.
 	Prompt string `json:"prompt"`
 
@@ -588,6 +592,8 @@ type Options struct {
 	NumPredict       int      `json:"num_predict,omitempty"`
 	TopK             int      `json:"top_k,omitempty"`
 	TopP             float32  `json:"top_p,omitempty"`
+	StopId           []string `json:"stop_id,omitempty"`
+	MaxNewToken      int      `json:"max_new_token,omitempty"`
 	MinP             float32  `json:"min_p,omitempty"`
 	TypicalP         float32  `json:"typical_p,omitempty"`
 	RepeatLastN      int      `json:"repeat_last_n,omitempty"`
@@ -693,6 +699,9 @@ type CreateRequest struct {
 	// System is the system prompt for the model.
 	System string `json:"system,omitempty"`
 
+	ModelType   string `json:"modeltype,omitempty"`
+	InferDevice string `json:"inferdevice,omitempty"`
+
 	// Parameters is a map of hyper-parameters which are applied to the model.
 	Parameters map[string]any `json:"parameters,omitempty"`
 
@@ -744,6 +753,8 @@ type ShowResponse struct {
 	Parameters    string             `json:"parameters,omitempty"`
 	Template      string             `json:"template,omitempty"`
 	System        string             `json:"system,omitempty"`
+	ModelType     string             `json:"modeltype,omitempty"`
+	InferDevice   string             `json:"inferdevice,omitempty"`
 	Renderer      string             `json:"renderer,omitempty"`
 	Parser        string             `json:"parser,omitempty"`
 	Details       ModelDetails       `json:"details,omitempty"`
@@ -1063,6 +1074,7 @@ func DefaultOptions() Options {
 		TopK:             40,
 		TopP:             0.9,
 		TypicalP:         1.0,
+		MaxNewToken:      2048,
 		RepeatLastN:      64,
 		RepeatPenalty:    1.1,
 		PresencePenalty:  0.0,

@@ -99,6 +99,10 @@ func (f Modelfile) CreateRequest(relativeDir string) (*api.CreateRequest, error)
 			req.Template = c.Args
 		case "system":
 			req.System = c.Args
+		case "modeltype":
+			req.ModelType = c.Args
+		case "inferdevice":
+			req.InferDevice = c.Args
 		case "license":
 			licenses = append(licenses, c.Args)
 		case "renderer":
@@ -362,7 +366,7 @@ const (
 var (
 	errMissingFrom        = errors.New("no FROM line")
 	errInvalidMessageRole = errors.New("message role must be one of \"system\", \"user\", or \"assistant\"")
-	errInvalidCommand     = errors.New("command must be one of \"from\", \"license\", \"template\", \"system\", \"adapter\", \"renderer\", \"parser\", \"parameter\", \"message\", or \"requires\"")
+	errInvalidCommand     = errors.New("command must be one of \"from\", \"license\", \"template\", \"system\", \"adapter\", \"renderer\", \"parser\", \"parameter\", \"inferdevice\", \"modeltype\", \"message\", or \"requires\"")
 )
 
 type ParserError struct {
@@ -622,7 +626,7 @@ func isValidMessageRole(role string) bool {
 
 func isValidCommand(cmd string) bool {
 	switch strings.ToLower(cmd) {
-	case "from", "license", "template", "system", "adapter", "renderer", "parser", "parameter", "message", "requires":
+	case "from", "license", "template", "system", "adapter", "renderer", "parser", "parameter", "message", "requires", "inferdevice", "modeltype":
 		return true
 	default:
 		return false
