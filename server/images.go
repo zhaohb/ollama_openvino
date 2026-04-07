@@ -85,9 +85,9 @@ func (m *Model) Capabilities() []model.Capability {
 
 	if m.ModelBackend == "OpenVINO" {
 		if m.ModelType == "VLM" {
-			capabilities = append(capabilities, model.CapabilityCompletion, model.CapabilityVision)
+			capabilities = append(capabilities, model.CapabilityCompletion, model.CapabilityVision, model.CapabilityTools)
 		} else {
-			capabilities = append(capabilities, model.CapabilityCompletion)
+			capabilities = append(capabilities, model.CapabilityCompletion, model.CapabilityTools)
 		}
 	} else if m.ModelPath != "" {
 		f, err := gguf.Open(m.ModelPath)
