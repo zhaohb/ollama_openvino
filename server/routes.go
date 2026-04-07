@@ -2235,6 +2235,65 @@ func toolCallId() string {
 	return "call_" + strings.ToLower(string(b))
 }
 
+func extractGenaiToolCalls(content string, requestTools []api.Tool) ([]api.ToolCall, string, string) {
+	const openTag = "<tool_call>"
+	const closeTag = "</tool_call>"
+
+	firstIdx := strings.Index(content, openTag)
+	if firstIdx == -1 {
+		return nil, "", content
+	}
+
+	reasoning := strings.TrimSpace(content[:firstIdx])
+	remaining := content[firstIdx:]
+
+	var toolCalls []api.ToolCall
+	callIndex := 0
+	for {
+		start := strings.Index(remaining, openTag)
+		if start == -1 {
+			break
+		}
+		end := strings.Index(remaining[start:], closeTag)
+		if end == -1 {
+			break
+		}
+		end += start + len(closeTag)
+
+		jsonStr := strings.TrimSpace(remaining[start+len(openTag) : end-len(closeTag)])
+
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+			remaining = remaining[end:]
+			continue
+		}
+
+		name, _ := raw["name"].(string)
+		argsRaw, _ := raw["arguments"].(map[string]any)
+
+		args := api.NewToolCallFunctionArguments()
+		for k, v := range argsRaw {
+			args.Set(k, v)
+		}
+
+		tc := api.ToolCall{
+			ID: toolCallId(),
+			Function: api.ToolCallFunction{
+				Name:      name,
+				Arguments: args,
+				Index:     callIndex,
+			},
+		}
+		toolCalls = append(toolCalls, tc)
+		callIndex++
+
+		remaining = remaining[end:]
+	}
+
+	leftover := strings.TrimSpace(remaining)
+	return toolCalls, reasoning, leftover
+}
+
 func (s *Server) ChatHandler(c *gin.Context) {
 	checkpointStart := time.Now()
 
@@ -2860,7 +2919,18 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					return
 				}
 			}
-			resp.Message.Content = sbContent.String()
+
+			fullContent := sbContent.String()
+			toolCalls, reasoning, remaining := extractGenaiToolCalls(fullContent, req.Tools)
+			if len(toolCalls) > 0 {
+				resp.Message.ToolCalls = toolCalls
+				resp.Message.Content = remaining
+				resp.Message.Thinking = reasoning
+				resp.DoneReason = "tool_calls"
+			} else {
+				resp.Message.Content = fullContent
+			}
+
 			c.JSON(http.StatusOK, resp)
 			return
 		}
