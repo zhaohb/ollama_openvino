@@ -2235,65 +2235,6 @@ func toolCallId() string {
 	return "call_" + strings.ToLower(string(b))
 }
 
-func extractGenaiToolCalls(content string, requestTools []api.Tool) ([]api.ToolCall, string, string) {
-	const openTag = "<tool_call>"
-	const closeTag = "</tool_call>"
-
-	firstIdx := strings.Index(content, openTag)
-	if firstIdx == -1 {
-		return nil, "", content
-	}
-
-	reasoning := strings.TrimSpace(content[:firstIdx])
-	remaining := content[firstIdx:]
-
-	var toolCalls []api.ToolCall
-	callIndex := 0
-	for {
-		start := strings.Index(remaining, openTag)
-		if start == -1 {
-			break
-		}
-		end := strings.Index(remaining[start:], closeTag)
-		if end == -1 {
-			break
-		}
-		end += start + len(closeTag)
-
-		jsonStr := strings.TrimSpace(remaining[start+len(openTag) : end-len(closeTag)])
-
-		var raw map[string]any
-		if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
-			remaining = remaining[end:]
-			continue
-		}
-
-		name, _ := raw["name"].(string)
-		argsRaw, _ := raw["arguments"].(map[string]any)
-
-		args := api.NewToolCallFunctionArguments()
-		for k, v := range argsRaw {
-			args.Set(k, v)
-		}
-
-		tc := api.ToolCall{
-			ID: toolCallId(),
-			Function: api.ToolCallFunction{
-				Name:      name,
-				Arguments: args,
-				Index:     callIndex,
-			},
-		}
-		toolCalls = append(toolCalls, tc)
-		callIndex++
-
-		remaining = remaining[end:]
-	}
-
-	leftover := strings.TrimSpace(remaining)
-	return toolCalls, reasoning, leftover
-}
-
 func (s *Server) ChatHandler(c *gin.Context) {
 	checkpointStart := time.Now()
 
@@ -2866,6 +2807,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		log.Printf("ChatHandler prompt: %s", prompt)
 		log.Printf("ChatHandler images count: %d", len(images))
 
+		var genaiToolParser *tools.Parser
+		if len(req.Tools) > 0 {
+			genaiToolParser = tools.NewParserWithTag(req.Tools, "<tool_call>")
+		}
+
 		ch := make(chan any)
 		go func() {
 			defer close(ch)
@@ -2893,6 +2839,26 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					res.TotalDuration = time.Since(checkpointStart)
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 				}
+
+				if genaiToolParser != nil {
+					toolCalls, content := genaiToolParser.Add(res.Message.Content)
+					if len(content) > 0 {
+						res.Message.Content = content
+					} else if len(toolCalls) > 0 {
+						for i := range toolCalls {
+							toolCalls[i].ID = toolCallId()
+						}
+						res.Message.ToolCalls = toolCalls
+						res.Message.Content = ""
+					} else {
+						if cr.Done {
+							res.Message.Content = genaiToolParser.Content()
+							ch <- res
+						}
+						return
+					}
+				}
+
 				ch <- res
 			}); err != nil {
 				ch <- gin.H{"error": err.Error()}
@@ -2902,10 +2868,14 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		if req.Stream != nil && !*req.Stream {
 			var resp api.ChatResponse
 			var sbContent strings.Builder
+			var toolCalls []api.ToolCall
 			for rr := range ch {
 				switch t := rr.(type) {
 				case api.ChatResponse:
 					sbContent.WriteString(t.Message.Content)
+					if len(t.Message.ToolCalls) > 0 {
+						toolCalls = append(toolCalls, t.Message.ToolCalls...)
+					}
 					resp = t
 				case gin.H:
 					msg, ok := t["error"].(string)
@@ -2919,18 +2889,13 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					return
 				}
 			}
-
-			fullContent := sbContent.String()
-			toolCalls, reasoning, remaining := extractGenaiToolCalls(fullContent, req.Tools)
+			resp.Message.Content = sbContent.String()
 			if len(toolCalls) > 0 {
+				resp.Message.Thinking = resp.Message.Content
+				resp.Message.Content = ""
 				resp.Message.ToolCalls = toolCalls
-				resp.Message.Content = remaining
-				resp.Message.Thinking = reasoning
 				resp.DoneReason = "tool_calls"
-			} else {
-				resp.Message.Content = fullContent
 			}
-
 			c.JSON(http.StatusOK, resp)
 			return
 		}
