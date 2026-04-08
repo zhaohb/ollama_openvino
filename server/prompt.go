@@ -46,6 +46,20 @@ func genaiChatPrompt(ctx context.Context, m *Model, opts *api.Options, msgs []ap
 		msgs[cnt].Content = prefix + content
 	}
 
+	hasToolResult := false
+	for _, msg := range msgs {
+		if msg.Role == "tool" {
+			hasToolResult = true
+			break
+		}
+	}
+	msgs = convertToolMessages(msgs)
+
+	promptTools := tools
+	if hasToolResult {
+		promptTools = nil
+	}
+
 	var b bytes.Buffer
 	thinkVal := false
 	thinkLevel := ""
@@ -53,11 +67,41 @@ func genaiChatPrompt(ctx context.Context, m *Model, opts *api.Options, msgs []ap
 		thinkVal = think.Bool()
 		thinkLevel = think.String()
 	}
-	if err := m.Template.Execute(&b, template.Values{Messages: msgs, Tools: tools, Think: thinkVal, ThinkLevel: thinkLevel, IsThinkSet: think != nil}); err != nil {
+	if err := m.Template.Execute(&b, template.Values{Messages: msgs, Tools: promptTools, Think: thinkVal, ThinkLevel: thinkLevel, IsThinkSet: think != nil}); err != nil {
 		return "", nil, err
 	}
 
 	return b.String(), images, nil
+}
+
+// convertToolMessages rewrites tool-related messages so that legacy
+// templates (which only understand user/assistant/system roles) can
+// still see the tool call history and results.
+func convertToolMessages(msgs []api.Message) []api.Message {
+	out := make([]api.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		switch {
+		case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
+			var sb strings.Builder
+			if msg.Content != "" {
+				sb.WriteString(msg.Content)
+				sb.WriteString("\n")
+			}
+			for _, tc := range msg.ToolCalls {
+				fmt.Fprintf(&sb, "<tool_call>\n{\"name\": \"%s\", \"arguments\": %s}\n</tool_call>\n",
+					tc.Function.Name, tc.Function.Arguments.String())
+			}
+			out = append(out, api.Message{Role: "assistant", Content: sb.String()})
+		case msg.Role == "tool":
+			out = append(out, api.Message{
+				Role:    "user",
+				Content: fmt.Sprintf("<tool_response>\n%s\n</tool_response>", msg.Content),
+			})
+		default:
+			out = append(out, msg)
+		}
+	}
+	return out
 }
 
 // chatPrompt accepts a list of messages and returns the prompt and images that should be used for the next chat turn.
