@@ -604,6 +604,7 @@ type Options struct {
 	PresencePenalty  float32  `json:"presence_penalty,omitempty"`
 	FrequencyPenalty float32  `json:"frequency_penalty,omitempty"`
 	Stop             []string `json:"stop,omitempty"`
+	EnableThinking   bool     `json:"enable_thinking,omitempty"`
 }
 
 // Runner options which must be set when the model is loaded into memory
@@ -1084,6 +1085,7 @@ func DefaultOptions() Options {
 		PresencePenalty:  0.0,
 		FrequencyPenalty: 0.0,
 		Seed:             -1,
+		EnableThinking:   true,
 
 		Runner: Runner{
 			// options set when the model is loaded

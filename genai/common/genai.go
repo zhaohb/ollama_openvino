@@ -75,14 +75,15 @@ import (
 )
 
 type SamplingParams struct {
-	TopK          int
-	TopP          float32
-	Temp          float32
-	MaxNewToken   int
-	RepeatPenalty float32
-	StopString    []string
-	StopIds       []string
-	RepeatLastN   int
+	TopK           int
+	TopP           float32
+	Temp           float32
+	MaxNewToken    int
+	RepeatPenalty  float32
+	StopString     []string
+	StopIds        []string
+	RepeatLastN    int
+	EnableThinking bool
 }
 
 // type Model struct {
@@ -406,6 +407,25 @@ func GenerateTextWithMetrics(pipeline *C.ov_genai_llm_pipeline, input string, sa
 					log.Printf("tools set on chat_history successfully")
 				}
 			}
+		}
+	}
+
+	// Set enable_thinking via extra_context on chat_history
+	extraContextJSON := fmt.Sprintf(`{"enable_thinking": %t}`, samplingparameters.EnableThinking)
+	cExtraContextJSON := C.CString(extraContextJSON)
+	defer C.free(unsafe.Pointer(cExtraContextJSON))
+
+	var extraContextContainer *C.ov_genai_json_container
+	jsonStatus = C.ov_genai_json_container_create_from_json_string(&extraContextContainer, cExtraContextJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		log.Printf("failed to create extra_context json container: %d", jsonStatus)
+	} else {
+		defer C.ov_genai_json_container_free(extraContextContainer)
+		chatStatus = C.ov_genai_chat_history_set_extra_context(chatHistory, extraContextContainer)
+		if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+			log.Printf("failed to set extra_context on chat history: %d", chatStatus)
+		} else {
+			log.Printf("enable_thinking=%t set on chat_history extra_context", samplingparameters.EnableThinking)
 		}
 	}
 

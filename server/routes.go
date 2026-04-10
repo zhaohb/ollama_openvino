@@ -707,6 +707,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			return
 		}
 
+		// CLI --think / /set think overrides Modelfile enable_thinking
+		if req.Think != nil {
+			opts.EnableThinking = req.Think.Bool()
+		}
+
 		checkpointLoaded := time.Now()
 
 		if req.Prompt == "" {
@@ -2789,6 +2794,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				DoneReason: "load",
 			})
 			return
+		}
+
+		// CLI --think / /set think overrides Modelfile enable_thinking
+		if req.Think != nil {
+			opts.EnableThinking = req.Think.Bool()
 		}
 
 		msgs := append(m.Messages, req.Messages...)
