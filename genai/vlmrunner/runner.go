@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -245,22 +246,27 @@ func (s *Server) run(ctx context.Context) {
 }
 
 func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
-	// requestDump, err := httputil.DumpRequest(r, true)
-	// if err != nil {
-	// 	log.Println("Error dumping request:", err)
-	// }
-	// log.Printf("Request info :\n%s", requestDump)
-
-	var req CompletionRequest
-	if req.Options == nil {
-		opts := api.DefaultOptions()
-		req.Options = &opts
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var req CompletionRequest
+	opts := api.DefaultOptions()
+	req.Options = &opts
+
+	if err := json.Unmarshal(body, &req); err != nil {
 		log.Printf("decode request failed: %T: %v", err, err)
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
+	}
+
+	var rawMap map[string]any
+	if err := json.Unmarshal(body, &rawMap); err == nil {
+		if err := req.Options.FromMap(rawMap); err != nil {
+			log.Printf("warning: failed to parse options from request: %v", err)
+		}
 	}
 
 	// if b, err := json.MarshalIndent(req, "", "  "); err == nil {
