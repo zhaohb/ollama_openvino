@@ -54,6 +54,14 @@ type Sequence struct {
 	// tools available for function calling
 	tools []api.Tool
 
+	// full chat messages for chat_history-based generation (OpenVINO GenAI)
+	messages []api.Message
+
+	// OpenVINO perf metrics: real prompt / generation token counts (set after generate)
+	ovPromptTokens int
+	ovGenTokens    int
+	ovPerfApplied  bool // true after decode path filled metrics from OpenVINO
+
 	// Metrics
 	startProcessingTime time.Time
 	startGenerationTime time.Time
@@ -191,4 +199,40 @@ func (s *Sequence) GetNumDecoded() int {
 
 func (s *Sequence) GetTools() []api.Tool {
 	return s.tools
+}
+
+func (s *Sequence) GetMessages() []api.Message {
+	return s.messages
+}
+
+func (s *Sequence) SetMessages(msgs []api.Message) {
+	s.messages = msgs
+}
+
+// SetOpenVINOTokenCounts stores token counts from ov_genai_perf_metrics after inference.
+func (s *Sequence) SetOpenVINOTokenCounts(promptTokens, generationTokens int) {
+	s.ovPromptTokens = promptTokens
+	s.ovGenTokens = generationTokens
+}
+
+// SetOVPerfApplied marks that token counts came from OpenVINO (even if both are zero).
+func (s *Sequence) SetOVPerfApplied(applied bool) {
+	s.ovPerfApplied = applied
+}
+
+// FinalPromptN returns prompt token count for API usage: OpenVINO metrics if available,
+// else legacy fallback (number of input segments, often wrong).
+func (s *Sequence) FinalPromptN() int {
+	if s.ovPerfApplied {
+		return s.ovPromptTokens
+	}
+	return s.numPromptInputs
+}
+
+// FinalPredictedN returns generated token count for API usage.
+func (s *Sequence) FinalPredictedN() int {
+	if s.ovPerfApplied {
+		return s.ovGenTokens
+	}
+	return s.numDecoded
 }

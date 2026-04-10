@@ -593,6 +593,10 @@ func (s *GenaillmServer) Completion(ctx context.Context, req llamaserver.Complet
 		"enable_thinking":   req.Options.EnableThinking,
 	}
 
+	if len(req.Messages) > 0 {
+		request["messages"] = req.Messages
+	}
+
 	if len(req.Format) > 0 {
 		switch string(req.Format) {
 		case `null`, `""`:

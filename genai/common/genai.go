@@ -71,6 +71,7 @@ import (
 	"strconv"
 	"unsafe"
 
+	"github.com/ollama/ollama/api"
 	llamaserver "github.com/ollama/ollama/llm/llama"
 )
 
@@ -287,6 +288,20 @@ func PrintGenaiMetrics(metrics *C.ov_genai_perf_metrics) {
 	log.Printf("Throughput: %.2f ± %.2f tokens/s\n", tput_mean, tput_std)
 }
 
+// applyPerfMetricsToSequence copies OpenVINO-reported token counts onto the sequence
+// so the genairunner HTTP layer can populate PromptN / PredictedN for Ollama usage APIs.
+func applyPerfMetricsToSequence(metrics *C.ov_genai_perf_metrics, seq *Sequence) {
+	if metrics == nil || seq == nil {
+		return
+	}
+	var numGen C.size_t
+	var numIn C.size_t
+	C.ov_genai_perf_metrics_get_num_generation_tokens(metrics, &numGen)
+	C.ov_genai_perf_metrics_get_num_input_tokens(metrics, &numIn)
+	seq.SetOpenVINOTokenCounts(int(numIn), int(numGen))
+	seq.SetOVPerfApplied(true)
+}
+
 func SetSamplingParams(samplingparameters *SamplingParams) *C.ov_genai_generation_config {
 	var cConfig *C.ov_genai_generation_config
 	C.ov_genai_generation_config_create(&cConfig)
@@ -445,6 +460,155 @@ func GenerateTextWithMetrics(pipeline *C.ov_genai_llm_pipeline, input string, sa
 	var metrics *C.ov_genai_perf_metrics
 	C.ov_genai_decoded_results_get_perf_metrics(result, &metrics)
 
+	applyPerfMetricsToSequence(metrics, seq)
+	PrintGenaiMetrics(metrics)
+
+	return C.GoString((*C.char)(cOutput))
+}
+
+// addMessageToChatHistory marshals a message map to JSON and pushes it into the C chat_history.
+func addMessageToChatHistory(chatHistory *C.ov_genai_chat_history, msg map[string]any) error {
+	msgJSON, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %v", err)
+	}
+
+	cMsgJSON := C.CString(string(msgJSON))
+	defer C.free(unsafe.Pointer(cMsgJSON))
+
+	var container *C.ov_genai_json_container
+	jsonStatus := C.ov_genai_json_container_create_from_json_string(&container, cMsgJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		return fmt.Errorf("failed to create json container: %d", jsonStatus)
+	}
+	defer C.ov_genai_json_container_free(container)
+
+	chatStatus := C.ov_genai_chat_history_push_back(chatHistory, container)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		return fmt.Errorf("failed to push message to chat history: %d", chatStatus)
+	}
+	return nil
+}
+
+// GenerateWithChatHistory builds a full chat_history from []api.Message,
+// sets tools and extra_context, then calls generate_with_history.
+// This follows the OpenVINO GenAI architecture: tool responses are added
+// as separate messages with role "tool" into chat_history, and the chat
+// template handles all formatting internally.
+func GenerateWithChatHistory(pipeline *C.ov_genai_llm_pipeline, messages []api.Message,
+	tools []api.Tool, samplingparameters *SamplingParams, seq *Sequence) string {
+
+	cConfig := SetSamplingParams(samplingparameters)
+	var result *C.ov_genai_decoded_results
+	output_size := C.size_t(0)
+
+	var streamer_callback C.streamer_callback
+	streamer_callback.callback_func = (C.callback_function)(unsafe.Pointer(C.goCallbackBridge))
+
+	handle := cgo.NewHandle(seq)
+	defer handle.Delete()
+	streamer_callback.args = unsafe.Pointer(uintptr(handle))
+
+	var chatHistory *C.ov_genai_chat_history
+	chatStatus := C.ov_genai_chat_history_create(&chatHistory)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		log.Printf("failed to create chat history: %d", chatStatus)
+		return ""
+	}
+	defer C.ov_genai_chat_history_free(chatHistory)
+
+	for _, msg := range messages {
+		msgMap := map[string]any{
+			"role":    msg.Role,
+			"content": msg.Content,
+		}
+
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			var toolCallsData []map[string]any
+			for _, tc := range msg.ToolCalls {
+				tcMap := map[string]any{
+					"id":   tc.ID,
+					"type": "function",
+					"function": map[string]any{
+						"name":      tc.Function.Name,
+						"arguments": tc.Function.Arguments.ToMap(),
+					},
+				}
+				toolCallsData = append(toolCallsData, tcMap)
+			}
+			msgMap["tool_calls"] = toolCallsData
+		}
+
+		if msg.Role == "tool" {
+			if msg.ToolCallID != "" {
+				msgMap["tool_call_id"] = msg.ToolCallID
+			}
+			if msg.ToolName != "" {
+				msgMap["name"] = msg.ToolName
+			}
+		}
+
+		if err := addMessageToChatHistory(chatHistory, msgMap); err != nil {
+			log.Printf("failed to add %s message to chat history: %v", msg.Role, err)
+			return ""
+		}
+	}
+
+	if len(tools) > 0 {
+		toolsJSON, err := json.Marshal(tools)
+		if err != nil {
+			log.Printf("failed to marshal tools: %v", err)
+		} else {
+			// log.Printf("setting tools on chat_history: %s", string(toolsJSON))
+			cToolsJSON := C.CString(string(toolsJSON))
+			defer C.free(unsafe.Pointer(cToolsJSON))
+
+			var toolsContainer *C.ov_genai_json_container
+			jsonStatus := C.ov_genai_json_container_create_from_json_string(&toolsContainer, cToolsJSON)
+			if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+				log.Printf("failed to create tools json container: %d", jsonStatus)
+			} else {
+				defer C.ov_genai_json_container_free(toolsContainer)
+				chatStatus = C.ov_genai_chat_history_set_tools(chatHistory, toolsContainer)
+				if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+					log.Printf("failed to set tools on chat history: %d", chatStatus)
+				}
+			}
+		}
+	}
+
+	extraContextJSON := fmt.Sprintf(`{"enable_thinking": %t}`, samplingparameters.EnableThinking)
+	cExtraContextJSON := C.CString(extraContextJSON)
+	defer C.free(unsafe.Pointer(cExtraContextJSON))
+
+	var extraContextContainer *C.ov_genai_json_container
+	jsonStatus := C.ov_genai_json_container_create_from_json_string(&extraContextContainer, cExtraContextJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		log.Printf("failed to create extra_context json container: %d", jsonStatus)
+	} else {
+		defer C.ov_genai_json_container_free(extraContextContainer)
+		chatStatus = C.ov_genai_chat_history_set_extra_context(chatHistory, extraContextContainer)
+		if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+			log.Printf("failed to set extra_context on chat history: %d", chatStatus)
+		}
+	}
+
+	C.ov_genai_llm_pipeline_generate_with_history(pipeline,
+		chatHistory,
+		(*C.ov_genai_generation_config)(cConfig),
+		&streamer_callback,
+		&result)
+
+	C.ov_genai_decoded_results_get_string(result, (*C.char)(nil), &output_size)
+	cOutput := C.malloc(output_size)
+	defer C.free(cOutput)
+
+	C.ov_genai_decoded_results_get_string(result, (*C.char)(cOutput), &output_size)
+
+	var metrics *C.ov_genai_perf_metrics
+	C.ov_genai_decoded_results_get_perf_metrics(result, &metrics)
+
+	applyPerfMetricsToSequence(metrics, seq)
 	PrintGenaiMetrics(metrics)
 
 	return C.GoString((*C.char)(cOutput))
@@ -602,6 +766,7 @@ func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string,
 	var metrics *C.ov_genai_perf_metrics
 	C.ov_genai_vlm_decoded_results_get_perf_metrics(result, &metrics)
 
+	applyPerfMetricsToSequence(metrics, seq)
 	PrintGenaiMetrics(metrics)
 
 	log.Printf("result: %s", C.GoString((*C.char)(cOutput)))

@@ -30,6 +30,7 @@ type NewSequenceParams struct {
 	stop           []string
 	samplingParams *common.SamplingParams
 	tools          []api.Tool
+	messages       []api.Message
 }
 
 type Server struct {
@@ -117,7 +118,11 @@ func (s *Server) NewSequence(prompt string, images []ImageData, params NewSequen
 		return nil, errors.New("no input provided")
 	}
 
-	return common.NewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict, params.tools), nil
+	seq := common.NewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict, params.tools)
+	if len(params.messages) > 0 {
+		seq.SetMessages(params.messages)
+	}
+	return seq, nil
 }
 
 func (s *Server) removeSequence(seqIndex int, reason string) {
@@ -163,10 +168,15 @@ func (s *Server) processBatch() error {
 				log.Printf("  tool: %s", t.Function.Name)
 			}
 		}
-		for _, input := range seq.GetInputs() {
-			log.Printf("gen prompt: %s", input.GetPrompt())
-			common.GenerateTextWithMetrics(s.model, input.GetPrompt(), seq.GetSamplingParameters(), seq)
-			// log.Printf("gen result: ", seq.GetpendingResponses())
+
+		if msgs := seq.GetMessages(); len(msgs) > 0 {
+			log.Printf("generating with chat history, %d messages", len(msgs))
+			common.GenerateWithChatHistory(s.model, msgs, seq.GetTools(), seq.GetSamplingParameters(), seq)
+		} else {
+			for _, input := range seq.GetInputs() {
+				log.Printf("gen prompt: %s", input.GetPrompt())
+				common.GenerateTextWithMetrics(s.model, input.GetPrompt(), seq.GetSamplingParameters(), seq)
+			}
 		}
 		s.removeSequence(i, "")
 	}
@@ -206,11 +216,12 @@ type ImageData struct {
 }
 
 type CompletionRequest struct {
-	Prompt      string      `json:"prompt"`
-	Images      []ImageData `json:"image_data"`
-	Grammar     string      `json:"grammar"`
-	CachePrompt bool        `json:"cache_prompt"`
-	Tools       []api.Tool  `json:"tools,omitempty"`
+	Prompt      string         `json:"prompt"`
+	Images      []ImageData    `json:"image_data"`
+	Grammar     string         `json:"grammar"`
+	CachePrompt bool           `json:"cache_prompt"`
+	Tools       []api.Tool     `json:"tools,omitempty"`
+	Messages    []api.Message  `json:"messages,omitempty"`
 
 	Options *api.Options
 }
@@ -305,6 +316,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		numPredict:     req.Options.NumPredict,
 		samplingParams: &samplingParams,
 		tools:          req.Tools,
+		messages:       req.Messages,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create new sequence: %v", err), http.StatusInternalServerError)
@@ -352,9 +364,9 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 					Stop:         true,
 					StoppedLimit: seq.GetDoneReason() == "limit",
 					Timings: Timings{
-						PromptN:     seq.GetNumPromptInputs(),
+						PromptN:     seq.FinalPromptN(),
 						PromptMS:    float64(seq.GetStartGenerationTime().Sub(seq.GetStartProcessingTime()).Milliseconds()),
-						PredictedN:  seq.GetNumDecoded(),
+						PredictedN:  seq.FinalPredictedN(),
 						PredictedMS: float64(time.Since(seq.GetStartGenerationTime()).Milliseconds()),
 					},
 				}); err != nil {

@@ -1461,6 +1461,9 @@ type CompletionRequest struct {
 	Options *api.Options
 	Tools   []api.Tool
 
+	// Full chat messages for OpenVINO GenAI chat_history-based generation
+	Messages []api.Message
+
 	Grammar  string // set before sending the request to the subprocess
 	Shift    bool
 	Truncate bool

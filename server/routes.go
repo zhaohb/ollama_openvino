@@ -2768,7 +2768,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		streamResponse(c, ch)
 
 	} else {
-		// OpenVINO backend
+		// OpenVINO backend — uses GenAI chat_history for chat template rendering.
+		// Messages (including tool calls and tool responses) are passed directly
+		// to the GenAI C API which builds chat_history and applies the chat
+		// template internally via generate_with_history.
 		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), m.ModelBackend, m.ModelType, m.InferDevice, caps, req.Options, req.KeepAlive)
 		if errors.Is(err, errCapabilityCompletion) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
@@ -2796,7 +2799,6 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			return
 		}
 
-		// CLI --think / /set think overrides Modelfile enable_thinking
 		if req.Think != nil {
 			opts.EnableThinking = req.Think.Bool()
 		}
@@ -2807,15 +2809,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		}
 		msgs = filterThinkTags(msgs, m)
 
-		prompt, images, err := genaiChatPrompt(c.Request.Context(), m, opts, msgs, req.Tools, req.Think)
-		if err != nil {
-			slog.Error("chat prompt error", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+		log.Printf("ChatHandler messages count: %d, tools count: %d", len(msgs), len(req.Tools))
+		for i, msg := range msgs {
+			log.Printf("  msg[%d] role=%s content_len=%d toolcalls=%d", i, msg.Role, len(msg.Content), len(msg.ToolCalls))
 		}
-
-		log.Printf("ChatHandler prompt: %s", prompt)
-		log.Printf("ChatHandler images count: %d", len(images))
 
 		var genaiToolParser *tools.Parser
 		if len(req.Tools) > 0 {
@@ -2826,11 +2823,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		go func() {
 			defer close(ch)
 			if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
-				Prompt:  prompt,
-				Images:  images,
-				Format:  req.Format,
-				Options: opts,
-				Tools:   req.Tools,
+				Messages: msgs,
+				Format:   req.Format,
+				Options:  opts,
+				Tools:    req.Tools,
 			}, func(cr llm.CompletionResponse) {
 				res := api.ChatResponse{
 					Model:     req.Model,

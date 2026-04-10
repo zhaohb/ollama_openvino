@@ -345,9 +345,9 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 					Stop:         true,
 					StoppedLimit: seq.GetDoneReason() == "limit",
 					Timings: Timings{
-						PromptN:     seq.GetNumPromptInputs(),
+						PromptN:     seq.FinalPromptN(),
 						PromptMS:    float64(seq.GetStartGenerationTime().Sub(seq.GetStartProcessingTime()).Milliseconds()),
-						PredictedN:  seq.GetNumDecoded(),
+						PredictedN:  seq.FinalPredictedN(),
 						PredictedMS: float64(time.Since(seq.GetStartGenerationTime()).Milliseconds()),
 					},
 				}); err != nil {
