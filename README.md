@@ -585,12 +585,31 @@ Getting started with large language models and using the [GenAI](https://github.
   <img src="./images/ollama_vlm_test.gif" alt="Ollama-OV" width="900" height="600">
 </div>
 
+## Current features (OpenVINO backend)
+
+Capabilities below apply when the model uses **`ModelBackend "OpenVINO"`** in the Modelfile (Ollama-OV + [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai)).
+
+**LLM vs VLM:** **`chat_history`**, **tools / function calling**, and **`enable_thinking`** are implemented on the **LLM** path (`genairunner` + `ov_genai_llm_pipeline`). The **VLM** path (`vlmrunner`) does **not** support these yet—it uses **prompt + `image_data`** only.
+
+| Area | What works today |
+|------|------------------|
+| **LLM inference** | OpenVINO IR / packaged models loaded via CGO; **`genairunner`** drives `ov_genai_llm_pipeline` with **`generate_with_history`**, streaming tokens through the Go callback. |
+| **Chat & `chat_history` (LLM only)** | For LLM models, `/api/chat` sends the full **`messages`** array so GenAI builds **`chat_history`** and applies the model chat template. **Not available on the VLM runner.** |
+| **Tools / function calling (LLM only)** | Tool JSON on chat history (`set_tools`); assistant replies may include tool calls (e.g. `<tool_call>` parsing). Clients can append **`role: "tool"`** with **`tool_call_id`** for the next turn. **VLM does not wire tools through this path.** |
+| **Thinking (LLM only)** | `enable_thinking` is passed via **`extra_context`** on `chat_history` when enabled. **Not supported on VLM.** |
+| **Token usage (metrics)** | Completion timings use **`ov_genai_perf_metrics`** (`num_input_tokens`, `num_generation_tokens`) so **`prompt_eval_count` / `eval_count`** and OpenAI-style **`usage`** reflect real counts instead of placeholders (LLM and VLM runners). |
+| **VLM** | Vision-language models use **`vlmrunner`**: **prompt + `image_data`** to `ov_genai_vlm_pipeline`; see **Model library (VLM)**. No **`chat_history`**-style multi-turn messages, **tools**, or **thinking** integration in this fork yet. |
+| **Devices** | **CPU**, **GPU**, and **NPU** where the model package and drivers support it (see device columns in the model tables). |
+| **GGUF (experimental)** | Optional GGUF → GenAI path for development; **not recommended for production** (see **Import from GGUF file** below). |
+
+> **中文摘要：** OpenVINO 后端：**LLM** 支持流式推理、完整 `messages` → GenAI **`chat_history`**、**工具调用**与多轮 tool 回传、**thinking**；**VLM** 目前仅 **prompt + 图像** 推理，**尚不支持** `chat_history`、工具与 thinking。LLM/VLM 均可用性能统计回填 **token 用量**；另支持 CPU/GPU/NPU 与实验性 GGUF。
+
 ## Google Drive Download Links
 
 ### Windows
 
-- [ollama.exe Download](https://drive.google.com/file/d/1ArtjRT2CmZoUWEps0NGkXWXR311RbrXl/view?usp=sharing)
-- [OpenVINO GenAI Download](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/windows/openvino_genai_windows_2025.4.0.0_x86_64.zip)
+- [ollama.exe Download](https://drive.google.com/drive/folders/11fVeRbVfWS5MONAFX30w9Hsz2hMT3yaG?usp=sharing)
+- [OpenVINO GenAI Download](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.1/windows/openvino_genai_windows_2026.1.0.0_x86_64.zip)
 
 ## Docker
 
@@ -615,7 +634,7 @@ docker run -it --rm --device=/dev/dri:/dev/dri  --device=/dev/accel:/dev/accel -
 Execute the following commands inside the container:
 
 ```shell
-source /home/ollama_ov_server/openvino_genai_ubuntu22_2025.3.0.0.dev20250630_x86_64/setupvars.sh
+source /home/ollama_ov_server/openvino_genai_ubuntu22_2026.1.0.0_x86_64/setupvars.sh
 ollama serve
 ```
 
@@ -747,9 +766,9 @@ Let's take [deepseek-ai/DeepSeek-R1-Distill-Qwen-7B](https://hf-mirror.com/deeps
       - If not specified, the system will prioritize using the GPU by default. If no GPU is available, it will automatically fall back to using the CPU. If InferDevice is explicitly set, the system will strictly use the specified device. If the specified device is unavailable, the system will follow the same fallback strategy as when InferDevice is not set (i.e., GPU first, then CPU).
       - If there are multiple GPUs in the environment, you can specify which GPU device to use by indicating GPU:<id>. For example, GPU:0 or GPU:1.
       
-4. Unzip OpenVINO GenAI package and set environment.[openvino_genai_windows_2025.4.0.0_x86_64](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/windows/openvino_genai_windows_2025.4.0.0_x86_64.zip)
+4. Unzip OpenVINO GenAI package and set environment.[openvino_genai_windows_2026.1.0.0_x86_64](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.1/windows/openvino_genai_windows_2026.1.0.0_x86_64.zip)
    ```shell
-   cd openvino_genai_windows_2025.4.0.0_x86_64
+   cd openvino_genai_windows_2026.1.0.0_x86_64
    setupvars.bat
    ```
 
@@ -900,9 +919,9 @@ Then build and run Ollama from the root directory of the repository:
 
 3. Initialize the GenAI environment
 
-   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/windows/openvino_genai_windows_2025.4.0.0_x86_64.zip), then extract it to a directory openvino_genai_windows_2025.4.0.0_x86_64.
+   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.1/windows/openvino_genai_windows_2026.1.0.0_x86_64.zip), then extract it to a directory openvino_genai_windows_2026.1.0.0_x86_64.
    ```shell
-   cd openvino_genai_windows_2025.4.0.0_x86_64
+   cd openvino_genai_windows_2026.1.0.0_x86_64
    setupvars.bat
    ```
   
@@ -944,9 +963,9 @@ Then build and run Ollama from the root directory of the repository:
 
 3. Initialize the GenAI environment
 
-   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2025.4/linux/openvino_genai_ubuntu22_2025.4.0.0_x86_64.tar.gz), then extract it to a directory openvino_genai_ubuntu22_2025.4.0.0_x86_64.
+   Download GenAI runtime from [GenAI](https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/2026.1/linux/openvino_genai_ubuntu22_2026.1.0.0_x86_64.tar.gz), then extract it to a directory openvino_genai_ubuntu22_2026.1.0.0_x86_64.
    ```shell
-   cd openvino_genai_ubuntu22_2025.4.0.0_x86_64
+   cd openvino_genai_ubuntu22_2026.1.0.0_x86_64
    source setupvars.sh
    ```
   
