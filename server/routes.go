@@ -2811,7 +2811,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 		log.Printf("ChatHandler messages count: %d, tools count: %d", len(msgs), len(req.Tools))
 		for i, msg := range msgs {
-			log.Printf("  msg[%d] role=%s content_len=%d toolcalls=%d", i, msg.Role, len(msg.Content), len(msg.ToolCalls))
+			log.Printf("  msg[%d] role=%s content_len=%d toolcalls=%d images=%d", i, msg.Role, len(msg.Content), len(msg.ToolCalls), len(msg.Images))
 		}
 
 		var genaiToolParser *tools.Parser
@@ -2822,6 +2822,12 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		ch := make(chan any)
 		go func() {
 			defer close(ch)
+			// VLM and LLM share the same call shape here: only Messages is
+			// passed. The non-VLM runner has Messages built into its
+			// CompletionRequest and routes through GenerateWithChatHistory;
+			// the VLM runner derives prompt+images from Messages internally
+			// (see vlmrunner/runner.go), so the OpenVINO VLM pipeline gets
+			// real input even without a chat_history C API.
 			if err := r.Completion(c.Request.Context(), llm.CompletionRequest{
 				Messages: msgs,
 				Format:   req.Format,

@@ -205,6 +205,12 @@ type CompletionRequest struct {
 	Grammar     string                  `json:"grammar"`
 	CachePrompt bool                    `json:"cache_prompt"`
 	Tools       []api.Tool              `json:"tools,omitempty"`
+	// Messages mirrors the non-VLM runner so the server can hand chat
+	// history straight to the runner. The OpenVINO VLM pipeline does not
+	// expose a chat_history C API yet, so when this is set we flatten the
+	// turns into a single prompt string and collect every attached image
+	// before falling through to the existing single-call generate path.
+	Messages []api.Message `json:"messages,omitempty"`
 
 	Options *api.Options
 }
@@ -267,6 +273,23 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		if err := req.Options.FromMap(rawMap); err != nil {
 			log.Printf("warning: failed to parse options from request: %v", err)
 		}
+	}
+
+	// VLM parity with LLM runner: when the server hands us Messages instead
+	// of a flat prompt + image_data, derive both here so the rest of the
+	// pipeline (NewSequence → VlmGenerateTextWithMetrics) is unchanged.
+	// Caller-supplied Prompt / Images take precedence so /api/generate-style
+	// requests keep working untouched.
+	if len(req.Messages) > 0 {
+		derivedPrompt, derivedImages := buildVLMPromptFromMessages(req.Messages)
+		if req.Prompt == "" {
+			req.Prompt = derivedPrompt
+		}
+		if len(derivedImages) > 0 {
+			req.Images = append(req.Images, derivedImages...)
+		}
+		log.Printf("vlm completion: derived from %d messages → prompt_len=%d images=%d",
+			len(req.Messages), len(req.Prompt), len(req.Images))
 	}
 
 	// if b, err := json.MarshalIndent(req, "", "  "); err == nil {
@@ -591,6 +614,61 @@ func Execute(args []string) error {
 	fmt.Println("after server")
 	cancel()
 	return nil
+}
+
+// buildVLMPromptFromMessages flattens a chat history into the single
+// prompt string + image set the OpenVINO VLM pipeline can currently
+// consume. Until a real chat_history C API exists, this gives the model
+// as much context as one start_chat → generate → finish_chat call can
+// carry: every image collected across turns, prior turns inlined as
+// plain "role: content" lines, and the latest user message preserved
+// verbatim as the active question.
+//
+// Behaviour notes:
+//   - Returns ("", nil) for an empty messages slice — the caller's
+//     Prompt/Images defaults stay in effect.
+//   - If no user message exists, falls back to the last message's
+//     content so a tool/assistant-only request still has *something*.
+//   - Image IDs are assigned by message index so duplicates from the
+//     same turn don't collide downstream.
+func buildVLMPromptFromMessages(msgs []api.Message) (string, []llamaserver.ImageData) {
+	if len(msgs) == 0 {
+		return "", nil
+	}
+
+	var images []llamaserver.ImageData
+	for i, msg := range msgs {
+		for _, raw := range msg.Images {
+			images = append(images, llamaserver.ImageData{ID: i, Data: raw})
+		}
+	}
+
+	lastUser := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			lastUser = i
+			break
+		}
+	}
+	if lastUser == -1 {
+		// No user turn at all — degrade gracefully to the last message.
+		return strings.TrimSpace(msgs[len(msgs)-1].Content), images
+	}
+
+	var sb strings.Builder
+	for i := 0; i < lastUser; i++ {
+		content := strings.TrimSpace(msgs[i].Content)
+		if content == "" {
+			continue
+		}
+		sb.WriteString(msgs[i].Role)
+		sb.WriteString(": ")
+		sb.WriteString(content)
+		sb.WriteString("\n")
+	}
+	sb.WriteString(strings.TrimSpace(msgs[lastUser].Content))
+
+	return sb.String(), images
 }
 
 // func main() {
