@@ -405,7 +405,8 @@ func GenerateTextWithMetrics(pipeline *C.ov_genai_llm_pipeline, input string, sa
 		if err != nil {
 			log.Printf("failed to marshal tools: %v", err)
 		} else {
-			log.Printf("setting tools on chat_history: %s", string(toolsJSON))
+			// log.Printf("setting tools on chat_history: %s", string(toolsJSON))
+			log.Printf("setting tools on chat_history: %d tool(s)", len(tools))
 			cToolsJSON := C.CString(string(toolsJSON))
 			defer C.free(unsafe.Pointer(cToolsJSON))
 
@@ -463,7 +464,9 @@ func GenerateTextWithMetrics(pipeline *C.ov_genai_llm_pipeline, input string, sa
 	applyPerfMetricsToSequence(metrics, seq)
 	PrintGenaiMetrics(metrics)
 
-	return C.GoString((*C.char)(cOutput))
+	out := C.GoString((*C.char)(cOutput))
+	log.Printf("genai decoded output (final cOutput):\n%s", out)
+	return out
 }
 
 // addMessageToChatHistory marshals a message map to JSON and pushes it into the C chat_history.
@@ -577,6 +580,7 @@ func GenerateWithChatHistory(pipeline *C.ov_genai_llm_pipeline, messages []api.M
 		}
 	}
 
+	log.Printf("enable_thinking: %t", samplingparameters.EnableThinking)
 	extraContextJSON := fmt.Sprintf(`{"enable_thinking": %t}`, samplingparameters.EnableThinking)
 	cExtraContextJSON := C.CString(extraContextJSON)
 	defer C.free(unsafe.Pointer(cExtraContextJSON))
@@ -611,7 +615,9 @@ func GenerateWithChatHistory(pipeline *C.ov_genai_llm_pipeline, messages []api.M
 	applyPerfMetricsToSequence(metrics, seq)
 	PrintGenaiMetrics(metrics)
 
-	return C.GoString((*C.char)(cOutput))
+	out := C.GoString((*C.char)(cOutput))
+	log.Printf("genai decoded output (final cOutput):\n%s", out)
+	return out
 }
 
 type ImageInfo struct {
@@ -751,8 +757,9 @@ func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string,
 		cRgbs = (**C.ov_tensor_t)(unsafe.Pointer(&rgbs[0]))
 	}
 
-	log.Printf("input: %s", input)
-	log.Printf("len of rgbs: %d", len(rgbs))
+	// log.Printf("input: %s", input)
+	// log.Printf("len of rgbs: %d", len(rgbs))
+	log.Printf("vlm: prompt_len=%d images=%d", len(input), len(rgbs))
 	C.ov_genai_vlm_pipeline_start_chat(pipeline)
 	C.ov_genai_vlm_pipeline_generate(pipeline, cInput, cRgbs, C.size_t(len(rgbs)), (*C.ov_genai_generation_config)(cConfig), &streamer_callback, &result)
 	C.ov_genai_vlm_pipeline_finish_chat(pipeline)

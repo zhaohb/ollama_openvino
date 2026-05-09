@@ -1476,7 +1476,8 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		resp.ModelType = m.ModelType
 		resp.InferDevice = m.InferDevice
 		resp.ModelBackend = m.ModelBackend
-		log.Printf("GetModelInfo OpenVINO resp: %+v", resp)
+		// log.Printf("GetModelInfo OpenVINO resp: %+v", resp)
+		log.Printf("GetModelInfo OpenVINO model_type: %s, infer_device: %s", resp.ModelType, resp.InferDevice)
 		return resp, nil
 	}
 

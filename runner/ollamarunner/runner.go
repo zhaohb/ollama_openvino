@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"reflect"
 	"regexp"
@@ -856,8 +855,8 @@ func (s *Server) computeBatch(activeBatch batchState) {
 }
 
 func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
-	requestDump, _ := httputil.DumpRequest(r, true)
-	log.Printf("Request info :\n%s", requestDump)
+	// requestDump, _ := httputil.DumpRequest(r, true)
+	// log.Printf("Request info :\n%s", requestDump)
 
 	var req llm.CompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -868,10 +867,6 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 	if req.Options == nil {
 		opts := api.DefaultOptions()
 		req.Options = &opts
-	}
-
-	if b, err := json.MarshalIndent(req, "", "  "); err == nil {
-		log.Printf("req(json) = %s", b)
 	}
 
 	// Set the headers to indicate streaming

@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -174,7 +173,7 @@ func (s *Server) processBatch() error {
 			common.GenerateWithChatHistory(s.model, msgs, seq.GetTools(), seq.GetSamplingParameters(), seq)
 		} else {
 			for _, input := range seq.GetInputs() {
-				log.Printf("gen prompt: %s", input.GetPrompt())
+				// log.Printf("gen prompt: %s", input.GetPrompt())
 				common.GenerateTextWithMetrics(s.model, input.GetPrompt(), seq.GetSamplingParameters(), seq)
 			}
 		}
@@ -216,12 +215,12 @@ type ImageData struct {
 }
 
 type CompletionRequest struct {
-	Prompt      string         `json:"prompt"`
-	Images      []ImageData    `json:"image_data"`
-	Grammar     string         `json:"grammar"`
-	CachePrompt bool           `json:"cache_prompt"`
-	Tools       []api.Tool     `json:"tools,omitempty"`
-	Messages    []api.Message  `json:"messages,omitempty"`
+	Prompt      string        `json:"prompt"`
+	Images      []ImageData   `json:"image_data"`
+	Grammar     string        `json:"grammar"`
+	CachePrompt bool          `json:"cache_prompt"`
+	Tools       []api.Tool    `json:"tools,omitempty"`
+	Messages    []api.Message `json:"messages,omitempty"`
 
 	Options *api.Options
 }
@@ -263,11 +262,11 @@ func (s *Server) run(ctx context.Context) {
 }
 
 func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
-	requestDump, err := httputil.DumpRequest(r, true)
-	if err != nil {
-		log.Println("Error dumping request:", err)
-	}
-	log.Printf("Request info :\n%s", requestDump)
+	// requestDump, err := httputil.DumpRequest(r, true)
+	// if err != nil {
+	// 	log.Println("Error dumping request:", err)
+	// }
+	// log.Printf("Request info :\n%s", requestDump)
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
