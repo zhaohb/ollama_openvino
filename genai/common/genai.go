@@ -726,13 +726,31 @@ func createTensorFromImageData(imageData []byte) (*C.ov_tensor_t, error) {
 	return tensor, nil
 }
 
-func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string, images []llamaserver.ImageData, samplingparameters *SamplingParams, seq *Sequence) string {
-	cInput := C.CString(input)
-	defer C.free(unsafe.Pointer(cInput))
+func vlmImageTensors(images []llamaserver.ImageData) ([]*C.ov_tensor_t, **C.ov_tensor_t) {
+	var rgbs []*C.ov_tensor_t
+	for i, imageData := range images {
+		tensor, err := createTensorFromImageData(imageData.Data)
+		if err != nil {
+			log.Printf("vlm: error creating tensor for image %d: %v", i, err)
+			continue
+		}
+		rgbs = append(rgbs, tensor)
+	}
+	var cRgbs **C.ov_tensor_t
+	if len(rgbs) > 0 {
+		cRgbs = (**C.ov_tensor_t)(unsafe.Pointer(&rgbs[0]))
+	}
+	return rgbs, cRgbs
+}
+
+// VlmGenerateWithChatHistory builds chat_history from messages (same structure as LLM),
+// sets tools and enable_thinking on history, then calls ov_genai_vlm_pipeline_generate_with_history.
+// rgbs must be images for the last user turn per OpenVINO VLM C API.
+func VlmGenerateWithChatHistory(pipeline *C.ov_genai_vlm_pipeline, messages []api.Message,
+	images []llamaserver.ImageData, tools []api.Tool, samplingparameters *SamplingParams, seq *Sequence) string {
 
 	cConfig := SetSamplingParams(samplingparameters)
 	var result *C.ov_genai_vlm_decoded_results
-
 	output_size := C.size_t(0)
 
 	var streamer_callback C.streamer_callback
@@ -742,27 +760,99 @@ func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string,
 	defer handle.Delete()
 	streamer_callback.args = unsafe.Pointer(uintptr(handle))
 
-	var rgbs []*C.ov_tensor_t
-	for i, imageData := range images {
-		tensor, err := createTensorFromImageData(imageData.Data)
-		if err != nil {
-			log.Printf("Error creating tensor for image %d: %v", i, err)
-			continue
+	var chatHistory *C.ov_genai_chat_history
+	chatStatus := C.ov_genai_chat_history_create(&chatHistory)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		log.Printf("vlm: failed to create chat history: %d", chatStatus)
+		return ""
+	}
+	defer C.ov_genai_chat_history_free(chatHistory)
+
+	for _, msg := range messages {
+		msgMap := map[string]any{
+			"role":    msg.Role,
+			"content": msg.Content,
 		}
-		rgbs = append(rgbs, tensor)
+
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			var toolCallsData []map[string]any
+			for _, tc := range msg.ToolCalls {
+				tcMap := map[string]any{
+					"id":   tc.ID,
+					"type": "function",
+					"function": map[string]any{
+						"name":      tc.Function.Name,
+						"arguments": tc.Function.Arguments.ToMap(),
+					},
+				}
+				toolCallsData = append(toolCallsData, tcMap)
+			}
+			msgMap["tool_calls"] = toolCallsData
+		}
+
+		if msg.Role == "tool" {
+			if msg.ToolCallID != "" {
+				msgMap["tool_call_id"] = msg.ToolCallID
+			}
+			if msg.ToolName != "" {
+				msgMap["name"] = msg.ToolName
+			}
+		}
+
+		if err := addMessageToChatHistory(chatHistory, msgMap); err != nil {
+			log.Printf("vlm: failed to add %s message to chat history: %v", msg.Role, err)
+			return ""
+		}
 	}
 
-	var cRgbs **C.ov_tensor_t
-	if len(rgbs) > 0 {
-		cRgbs = (**C.ov_tensor_t)(unsafe.Pointer(&rgbs[0]))
+	if len(tools) > 0 {
+		toolsJSON, err := json.Marshal(tools)
+		if err != nil {
+			log.Printf("vlm: failed to marshal tools: %v", err)
+		} else {
+			cToolsJSON := C.CString(string(toolsJSON))
+			defer C.free(unsafe.Pointer(cToolsJSON))
+
+			var toolsContainer *C.ov_genai_json_container
+			jsonStatus := C.ov_genai_json_container_create_from_json_string(&toolsContainer, cToolsJSON)
+			if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+				log.Printf("vlm: failed to create tools json container: %d", jsonStatus)
+			} else {
+				defer C.ov_genai_json_container_free(toolsContainer)
+				chatStatus = C.ov_genai_chat_history_set_tools(chatHistory, toolsContainer)
+				if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+					log.Printf("vlm: failed to set tools on chat history: %d", chatStatus)
+				}
+			}
+		}
 	}
 
-	// log.Printf("input: %s", input)
-	// log.Printf("len of rgbs: %d", len(rgbs))
-	log.Printf("vlm: prompt_len=%d images=%d", len(input), len(rgbs))
-	C.ov_genai_vlm_pipeline_start_chat(pipeline)
-	C.ov_genai_vlm_pipeline_generate(pipeline, cInput, cRgbs, C.size_t(len(rgbs)), (*C.ov_genai_generation_config)(cConfig), &streamer_callback, &result)
-	C.ov_genai_vlm_pipeline_finish_chat(pipeline)
+	log.Printf("vlm enable_thinking: %t", samplingparameters.EnableThinking)
+	extraContextJSON := fmt.Sprintf(`{"enable_thinking": %t}`, samplingparameters.EnableThinking)
+	cExtraContextJSON := C.CString(extraContextJSON)
+	defer C.free(unsafe.Pointer(cExtraContextJSON))
+
+	var extraContextContainer *C.ov_genai_json_container
+	jsonStatus := C.ov_genai_json_container_create_from_json_string(&extraContextContainer, cExtraContextJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		log.Printf("vlm: failed to create extra_context json container: %d", jsonStatus)
+	} else {
+		defer C.ov_genai_json_container_free(extraContextContainer)
+		chatStatus = C.ov_genai_chat_history_set_extra_context(chatHistory, extraContextContainer)
+		if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+			log.Printf("vlm: failed to set extra_context on chat history: %d", chatStatus)
+		}
+	}
+
+	rgbs, cRgbs := vlmImageTensors(images)
+	log.Printf("vlm generate_with_history: %d messages, %d image tensors", len(messages), len(rgbs))
+
+	C.ov_genai_vlm_pipeline_generate_with_history(pipeline,
+		chatHistory,
+		cRgbs, C.size_t(len(rgbs)),
+		(*C.ov_genai_generation_config)(cConfig),
+		&streamer_callback,
+		&result)
 
 	C.ov_genai_vlm_decoded_results_get_string(result, (*C.char)(nil), &output_size)
 	cOutput := C.malloc(output_size)
@@ -776,42 +866,197 @@ func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string,
 	applyPerfMetricsToSequence(metrics, seq)
 	PrintGenaiMetrics(metrics)
 
-	log.Printf("result: %s", C.GoString((*C.char)(cOutput)))
-
-	return C.GoString((*C.char)(cOutput))
+	out := C.GoString((*C.char)(cOutput))
+	log.Printf("vlm genai decoded output (final cOutput):\n%s", out)
+	return out
 }
 
-func VlmGenerateText(pipeline *C.ov_genai_vlm_pipeline, input string, images []llamaserver.ImageData, samplingparameters *SamplingParams) string {
-	cInput := C.CString(input)
-	defer C.free(unsafe.Pointer(cInput))
-
+// VlmGenerateTextWithMetrics uses a single user message in chat_history (LLM GenerateTextWithMetrics parity),
+// including tools and enable_thinking, then ov_genai_vlm_pipeline_generate_with_history.
+func VlmGenerateTextWithMetrics(pipeline *C.ov_genai_vlm_pipeline, input string, images []llamaserver.ImageData, samplingparameters *SamplingParams, seq *Sequence) string {
 	cConfig := SetSamplingParams(samplingparameters)
 	var result *C.ov_genai_vlm_decoded_results
-
 	output_size := C.size_t(0)
 
-	var rgbs []*C.ov_tensor_t
-	for _, imageData := range images {
-		tensor, err := createTensorFromImageData(imageData.Data)
+	var streamer_callback C.streamer_callback
+	streamer_callback.callback_func = (C.callback_function)(unsafe.Pointer(C.goCallbackBridge))
+
+	handle := cgo.NewHandle(seq)
+	defer handle.Delete()
+	streamer_callback.args = unsafe.Pointer(uintptr(handle))
+
+	var chatHistory *C.ov_genai_chat_history
+	chatStatus := C.ov_genai_chat_history_create(&chatHistory)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		log.Printf("vlm: failed to create chat history: %d", chatStatus)
+		return ""
+	}
+	defer C.ov_genai_chat_history_free(chatHistory)
+
+	messageJSON, err := json.Marshal(map[string]string{
+		"role":    "user",
+		"content": input,
+	})
+	if err != nil {
+		log.Printf("vlm: failed to marshal user message: %v", err)
+		return ""
+	}
+
+	cMessageJSON := C.CString(string(messageJSON))
+	defer C.free(unsafe.Pointer(cMessageJSON))
+
+	var messageContainer *C.ov_genai_json_container
+	jsonStatus := C.ov_genai_json_container_create_from_json_string(&messageContainer, cMessageJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		log.Printf("vlm: failed to create message json container: %d", jsonStatus)
+		return ""
+	}
+	defer C.ov_genai_json_container_free(messageContainer)
+
+	chatStatus = C.ov_genai_chat_history_push_back(chatHistory, messageContainer)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		log.Printf("vlm: failed to push message to chat history: %d", chatStatus)
+		return ""
+	}
+
+	tools := seq.GetTools()
+	if len(tools) > 0 {
+		toolsJSON, err := json.Marshal(tools)
 		if err != nil {
-			continue
+			log.Printf("vlm: failed to marshal tools: %v", err)
+		} else {
+			log.Printf("vlm: setting tools on chat_history: %d tool(s)", len(tools))
+			cToolsJSON := C.CString(string(toolsJSON))
+			defer C.free(unsafe.Pointer(cToolsJSON))
+
+			var toolsContainer *C.ov_genai_json_container
+			jsonStatus = C.ov_genai_json_container_create_from_json_string(&toolsContainer, cToolsJSON)
+			if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+				log.Printf("vlm: failed to create tools json container: %d", jsonStatus)
+			} else {
+				defer C.ov_genai_json_container_free(toolsContainer)
+				chatStatus = C.ov_genai_chat_history_set_tools(chatHistory, toolsContainer)
+				if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+					log.Printf("vlm: failed to set tools on chat history: %d", chatStatus)
+				}
+			}
 		}
-		rgbs = append(rgbs, tensor)
 	}
 
-	var cRgbs **C.ov_tensor_t
-	if len(rgbs) > 0 {
-		cRgbs = (**C.ov_tensor_t)(unsafe.Pointer(&rgbs[0]))
+	extraContextJSON := fmt.Sprintf(`{"enable_thinking": %t}`, samplingparameters.EnableThinking)
+	cExtraContextJSON := C.CString(extraContextJSON)
+	defer C.free(unsafe.Pointer(cExtraContextJSON))
+
+	var extraContextContainer *C.ov_genai_json_container
+	jsonStatus = C.ov_genai_json_container_create_from_json_string(&extraContextContainer, cExtraContextJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		log.Printf("vlm: failed to create extra_context json container: %d", jsonStatus)
+	} else {
+		defer C.ov_genai_json_container_free(extraContextContainer)
+		chatStatus = C.ov_genai_chat_history_set_extra_context(chatHistory, extraContextContainer)
+		if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+			log.Printf("vlm: failed to set extra_context on chat history: %d", chatStatus)
+		} else {
+			log.Printf("vlm: enable_thinking=%t set on chat_history extra_context", samplingparameters.EnableThinking)
+		}
 	}
 
-	C.ov_genai_vlm_pipeline_start_chat(pipeline)
-	C.ov_genai_vlm_pipeline_generate(pipeline, cInput, cRgbs, C.size_t(len(rgbs)), (*C.ov_genai_generation_config)(cConfig), nil, &result)
-	C.ov_genai_vlm_pipeline_finish_chat(pipeline)
+	rgbs, cRgbs := vlmImageTensors(images)
+	log.Printf("vlm: prompt_len=%d images=%d (successful tensors=%d)", len(input), len(images), len(rgbs))
+
+	C.ov_genai_vlm_pipeline_generate_with_history(pipeline,
+		chatHistory,
+		cRgbs, C.size_t(len(rgbs)),
+		(*C.ov_genai_generation_config)(cConfig),
+		&streamer_callback,
+		&result)
 
 	C.ov_genai_vlm_decoded_results_get_string(result, (*C.char)(nil), &output_size)
 	cOutput := C.malloc(output_size)
 	defer C.free(cOutput)
 
+	C.ov_genai_vlm_decoded_results_get_string(result, (*C.char)(cOutput), &output_size)
+
+	var metrics *C.ov_genai_perf_metrics
+	C.ov_genai_vlm_decoded_results_get_perf_metrics(result, &metrics)
+
+	applyPerfMetricsToSequence(metrics, seq)
+	PrintGenaiMetrics(metrics)
+
+	out := C.GoString((*C.char)(cOutput))
+	log.Printf("vlm result: %s", out)
+	return out
+}
+
+func VlmGenerateText(pipeline *C.ov_genai_vlm_pipeline, input string, images []llamaserver.ImageData, samplingparameters *SamplingParams) string {
+	cConfig := SetSamplingParams(samplingparameters)
+	var result *C.ov_genai_vlm_decoded_results
+	output_size := C.size_t(0)
+
+	var chatHistory *C.ov_genai_chat_history
+	chatStatus := C.ov_genai_chat_history_create(&chatHistory)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		log.Printf("vlm: failed to create chat history: %d", chatStatus)
+		return ""
+	}
+	defer C.ov_genai_chat_history_free(chatHistory)
+
+	messageJSON, err := json.Marshal(map[string]string{
+		"role":    "user",
+		"content": input,
+	})
+	if err != nil {
+		log.Printf("vlm: failed to marshal user message: %v", err)
+		return ""
+	}
+
+	cMessageJSON := C.CString(string(messageJSON))
+	defer C.free(unsafe.Pointer(cMessageJSON))
+
+	var messageContainer *C.ov_genai_json_container
+	jsonStatus := C.ov_genai_json_container_create_from_json_string(&messageContainer, cMessageJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		log.Printf("vlm: failed to create message json container: %d", jsonStatus)
+		return ""
+	}
+	defer C.ov_genai_json_container_free(messageContainer)
+
+	chatStatus = C.ov_genai_chat_history_push_back(chatHistory, messageContainer)
+	if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+		log.Printf("vlm: failed to push message to chat history: %d", chatStatus)
+		return ""
+	}
+
+	extraContextJSON := fmt.Sprintf(`{"enable_thinking": %t}`, samplingparameters.EnableThinking)
+	cExtraContextJSON := C.CString(extraContextJSON)
+	defer C.free(unsafe.Pointer(cExtraContextJSON))
+
+	var extraContextContainer *C.ov_genai_json_container
+	jsonStatus = C.ov_genai_json_container_create_from_json_string(&extraContextContainer, cExtraContextJSON)
+	if jsonStatus != C.OV_GENAI_JSON_CONTAINER_OK {
+		log.Printf("vlm: failed to create extra_context json container: %d", jsonStatus)
+	} else {
+		defer C.ov_genai_json_container_free(extraContextContainer)
+		chatStatus = C.ov_genai_chat_history_set_extra_context(chatHistory, extraContextContainer)
+		if chatStatus != C.OV_GENAI_CHAT_HISTORY_OK {
+			log.Printf("vlm: failed to set extra_context on chat history: %d", chatStatus)
+		}
+	}
+
+	rgbs, cRgbs := vlmImageTensors(images)
+
+	C.ov_genai_vlm_pipeline_generate_with_history(pipeline,
+		chatHistory,
+		cRgbs, C.size_t(len(rgbs)),
+		(*C.ov_genai_generation_config)(cConfig),
+		nil,
+		&result)
+
+	C.ov_genai_vlm_decoded_results_get_string(result, (*C.char)(nil), &output_size)
+	cOutput := C.malloc(output_size)
+	defer C.free(cOutput)
+
+	C.ov_genai_vlm_decoded_results_get_string(result, (*C.char)(cOutput), &output_size)
 	return C.GoString((*C.char)(cOutput))
 }
 func GenerateText(pipeline *C.ov_genai_llm_pipeline, input string, streamer_callback C.streamer_callback) string {

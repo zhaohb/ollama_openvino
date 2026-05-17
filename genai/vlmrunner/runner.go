@@ -29,6 +29,7 @@ type NewSequenceParams struct {
 	stop           []string
 	samplingParams *common.SamplingParams
 	tools          []api.Tool
+	messages       []api.Message
 }
 
 type Server struct {
@@ -118,7 +119,11 @@ func (s *Server) NewSequence(prompt string, images []llamaserver.ImageData, para
 		return nil, errors.New("no input provided")
 	}
 
-	return common.VlmNewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict, params.tools), nil
+	seq := common.VlmNewSequence(inputs, len(inputs), startTime, params.samplingParams, params.numPredict, params.tools)
+	if len(params.messages) > 0 {
+		seq.SetMessages(params.messages)
+	}
+	return seq, nil
 }
 
 func (s *Server) removeSequence(seqIndex int, reason string) {
@@ -158,9 +163,28 @@ func (s *Server) processBatch() error {
 		}
 
 		seq.SetStartGenerationTime(time.Now())
-		for _, input := range seq.GetVlmInputs() {
-			common.VlmGenerateTextWithMetrics(s.vlmmodel, input.GetPrompt(), input.GetImages(), seq.GetSamplingParameters(), seq)
-			// log.Printf("Prompt: ", input.GetPrompt())
+		if tools := seq.GetTools(); len(tools) > 0 {
+			log.Printf("vlm tools available: %d", len(tools))
+			// for _, t := range tools {
+			// 	log.Printf("  tool: %s", t.Function.Name)
+			// }
+		}
+		if msgs := seq.GetMessages(); len(msgs) > 0 {
+			lastImages := lastUserImagesFromMessages(msgs)
+			if len(lastImages) == 0 {
+				for _, in := range seq.GetVlmInputs() {
+					if len(in.GetImages()) > 0 {
+						lastImages = in.GetImages()
+						break
+					}
+				}
+			}
+			log.Printf("vlm generating with chat history, %d messages, %d images (last user / fallback)", len(msgs), len(lastImages))
+			common.VlmGenerateWithChatHistory(s.vlmmodel, msgs, lastImages, seq.GetTools(), seq.GetSamplingParameters(), seq)
+		} else {
+			for _, input := range seq.GetVlmInputs() {
+				common.VlmGenerateTextWithMetrics(s.vlmmodel, input.GetPrompt(), input.GetImages(), seq.GetSamplingParameters(), seq)
+			}
 		}
 		s.removeSequence(i, "")
 	}
@@ -205,11 +229,8 @@ type CompletionRequest struct {
 	Grammar     string                  `json:"grammar"`
 	CachePrompt bool                    `json:"cache_prompt"`
 	Tools       []api.Tool              `json:"tools,omitempty"`
-	// Messages mirrors the non-VLM runner so the server can hand chat
-	// history straight to the runner. The OpenVINO VLM pipeline does not
-	// expose a chat_history C API yet, so when this is set we flatten the
-	// turns into a single prompt string and collect every attached image
-	// before falling through to the existing single-call generate path.
+	// Messages use OpenVINO chat_history + generate_with_history. RGB tensors attach to the
+	// last user turn (see lastUserImagesFromMessages); else top-level image_data is used.
 	Messages []api.Message `json:"messages,omitempty"`
 
 	Options *api.Options
@@ -275,20 +296,8 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// VLM parity with LLM runner: when the server hands us Messages instead
-	// of a flat prompt + image_data, derive both here so the rest of the
-	// pipeline (NewSequence → VlmGenerateTextWithMetrics) is unchanged.
-	// Caller-supplied Prompt / Images take precedence so /api/generate-style
-	// requests keep working untouched.
 	if len(req.Messages) > 0 {
-		derivedPrompt, derivedImages := buildVLMPromptFromMessages(req.Messages)
-		if req.Prompt == "" {
-			req.Prompt = derivedPrompt
-		}
-		if len(derivedImages) > 0 {
-			req.Images = append(req.Images, derivedImages...)
-		}
-		log.Printf("vlm completion: derived from %d messages → prompt_len=%d images=%d",
+		log.Printf("vlm completion: %d messages, prompt_len=%d image_data=%d",
 			len(req.Messages), len(req.Prompt), len(req.Images))
 	}
 
@@ -321,6 +330,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		numPredict:     req.Options.NumPredict,
 		samplingParams: &samplingParams,
 		tools:          req.Tools,
+		messages:       req.Messages,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create new sequence: %v", err), http.StatusInternalServerError)
@@ -616,59 +626,23 @@ func Execute(args []string) error {
 	return nil
 }
 
-// buildVLMPromptFromMessages flattens a chat history into the single
-// prompt string + image set the OpenVINO VLM pipeline can currently
-// consume. Until a real chat_history C API exists, this gives the model
-// as much context as one start_chat → generate → finish_chat call can
-// carry: every image collected across turns, prior turns inlined as
-// plain "role: content" lines, and the latest user message preserved
-// verbatim as the active question.
-//
-// Behaviour notes:
-//   - Returns ("", nil) for an empty messages slice — the caller's
-//     Prompt/Images defaults stay in effect.
-//   - If no user message exists, falls back to the last message's
-//     content so a tool/assistant-only request still has *something*.
-//   - Image IDs are assigned by message index so duplicates from the
-//     same turn don't collide downstream.
-func buildVLMPromptFromMessages(msgs []api.Message) (string, []llamaserver.ImageData) {
-	if len(msgs) == 0 {
-		return "", nil
-	}
-
-	var images []llamaserver.ImageData
-	for i, msg := range msgs {
-		for _, raw := range msg.Images {
-			images = append(images, llamaserver.ImageData{ID: i, Data: raw})
-		}
-	}
-
-	lastUser := -1
+// lastUserImagesFromMessages returns image data for the chronologically last user message only
+// (OpenVINO VLM binds rgbs to the latest user turn). If that turn has no images, returns nil.
+func lastUserImagesFromMessages(msgs []api.Message) []llamaserver.ImageData {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
-			lastUser = i
-			break
-		}
-	}
-	if lastUser == -1 {
-		// No user turn at all — degrade gracefully to the last message.
-		return strings.TrimSpace(msgs[len(msgs)-1].Content), images
-	}
-
-	var sb strings.Builder
-	for i := 0; i < lastUser; i++ {
-		content := strings.TrimSpace(msgs[i].Content)
-		if content == "" {
+		if msgs[i].Role != "user" {
 			continue
 		}
-		sb.WriteString(msgs[i].Role)
-		sb.WriteString(": ")
-		sb.WriteString(content)
-		sb.WriteString("\n")
+		if len(msgs[i].Images) == 0 {
+			return nil
+		}
+		images := make([]llamaserver.ImageData, 0, len(msgs[i].Images))
+		for j, raw := range msgs[i].Images {
+			images = append(images, llamaserver.ImageData{ID: j, Data: raw})
+		}
+		return images
 	}
-	sb.WriteString(strings.TrimSpace(msgs[lastUser].Content))
-
-	return sb.String(), images
+	return nil
 }
 
 // func main() {
