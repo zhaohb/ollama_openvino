@@ -892,6 +892,142 @@ ollama ps
 ollama stop Qwen2.5-VL-3B-Instruct:v1 
 ```
 
+## Self-hosted OpenVINO model registry
+
+`ollama push` and `ollama pull` speak the Docker Distribution v2 API. Public
+hubs such as `ollama.com` may reject manifests that include OpenVINO-specific
+layer mediaTypes (`application/vnd.ollama.image.modelbackend`, `modeltype`,
+`inferdevice`). To distribute OpenVINO-packaged models inside your organisation
+without losing those layers, this fork ships a self-hosted registry under
+`cmd/ollama-registry`.
+
+Build the registry binary alongside `ollama.exe`:
+
+```shell
+go build -o ollama-registry.exe ./cmd/ollama-registry
+```
+
+Start it on the host that will hold the blobs and manifests:
+
+```shell
+mkdir C:\ollama-registry
+ollama-registry.exe serve --addr :5000 --root C:\ollama-registry
+```
+
+Optional flags:
+
+- `--token <secret>` - require `Authorization: Bearer <secret>` on every
+  request. The same value can be supplied via the `OLLAMA_REGISTRY_TOKEN`
+  environment variable.
+- `--addr <host:port>` - listen address; defaults to `:5000`.
+
+### Pushing OpenVINO models to the local registry
+
+The registry serves the same `/v2/<namespace>/<model>/...` paths the official
+client expects, so the only client-side changes are the host name and the
+`--insecure` flag (HTTP transport must be opted in explicitly):
+
+```shell
+ollama cp qwen3_4b_ov:v1 127.0.0.1:5000/zhaohb/qwen3-4b-ov:v1
+ollama push --insecure 127.0.0.1:5000/zhaohb/qwen3-4b-ov:v1
+```
+
+The model's `modelbackend`, `modeltype` and `inferdevice` layers are uploaded
+verbatim. No metadata is folded into `params`.
+
+> Windows note: the `:` in `host:port` is reserved for drive letters and
+> alternate data streams, so the local manifest is staged on disk under
+> `~/.ollama/models/manifests/127.0.0.1%3A5000/...`. The registry hostname on
+> the wire stays `127.0.0.1:5000`; the encoding only applies to the local file
+> system path. Make sure to run a build that includes this fork's
+> `escapeHostForFS` helper, otherwise `ollama cp` and `ollama push` will fail
+> with "The filename, directory name, or volume label syntax is incorrect".
+
+### Pulling on another machine
+
+```shell
+ollama pull --insecure 127.0.0.1:5000/zhaohb/qwen3-4b-ov:v1
+ollama run 127.0.0.1:5000/zhaohb/qwen3-4b-ov:v1
+```
+
+After a successful pull, `GetModel` restores `Model.ModelBackend`,
+`Model.ModelType` and `Model.InferDevice` from the dedicated layers, so the
+GenAI scheduler routes the request through the OpenVINO runner.
+
+### Hiding the host prefix in `ollama list`
+
+By default `ollama list` only hides `registry.ollama.ai` from a model's full
+name; anything served from a self-hosted registry shows up as
+`127.0.0.1:5000/zhaohb/qwen3-4b-ov:v1`. Set the `OLLAMA_REGISTRY` environment
+variable in the shell that runs `ollama serve`, and the daemon will treat
+those hosts as implicit too:
+
+```shell
+set OLLAMA_REGISTRY=127.0.0.1:5000
+ollama serve
+```
+
+In another shell, `ollama list` then renders side-by-side as if both
+registries were "the" registry:
+
+```
+NAME                     ID              SIZE      MODIFIED
+zhaohb/qwen3-4b-ov:v1    db52f20e3581    2.1 GB    8 minutes ago
+qwen3:latest             ffb68826078b    1.6 GB    42 hours ago
+```
+
+`OLLAMA_REGISTRY` accepts a semicolon-separated list when you have several
+internal registries to short-circuit, e.g.
+`OLLAMA_REGISTRY=127.0.0.1:5000;hub.lan:5000`. The first entry is also used as
+the parsing default, so short names without a host (`ollama run qwen3:v1`)
+resolve to that registry instead of `registry.ollama.ai`.
+
+### Built-in browser dashboard
+
+The same process that serves the OCI Distribution v2 API also exposes a
+read-only web UI for browsing what is stored on the registry. Open a browser to
+`http://127.0.0.1:5000/` to get a clean ollama.com-style listing of every
+namespace, model and tag. Click through to a tag page to see total size, layer
+table and inlined OpenVINO metadata (backend, model type, infer device, params).
+
+URL map:
+
+- `GET /`                              -- home: namespace cards with model counts and on-disk size
+- `GET /<namespace>`                   -- model list for a namespace
+- `GET /<namespace>/<model>`           -- tag list with ready-to-paste `ollama pull` snippets
+- `GET /<namespace>/<model>/<tag>`     -- tag detail with manifest digest and per-layer breakdown
+- `GET /api/registry/namespaces`       -- JSON: list of namespaces
+- `GET /api/registry/<ns>`             -- JSON: list of models
+- `GET /api/registry/<ns>/<model>`     -- JSON: list of tags
+- `GET /api/registry/<ns>/<model>/<tag>` -- JSON: full `ManifestInfo` including OpenVINO previews
+
+The `/v2/` OCI endpoint is unaffected; the dashboard simply dispatches on
+non-`/v2/` paths.
+
+### Running over HTTPS
+
+For deployments that should not require `--insecure`, terminate TLS in front of
+the registry with any reverse proxy (Caddy, nginx, IIS) and have it forward to
+`127.0.0.1:5000`. Clients then drop the `--insecure` flag and use
+`https://registry.example.com/...`. Authentication can be added either via
+`--token`, or by configuring the proxy to require client certificates.
+
+> When fronting with a proxy, forward `X-Forwarded-Host` and `X-Forwarded-Proto`
+> so both the upload `Location` headers and the dashboard's pull-command
+> snippets render with the public hostname instead of `127.0.0.1`.
+
+### Storage layout
+
+```
+<root>/
+  blobs/sha256-<hex>                       finalised content-addressed blobs
+  uploads/<uuid>                           in-progress upload sessions
+  manifests/<namespace>/<model>/<tag>      raw manifest JSON, byte-for-byte
+```
+
+Blobs are de-duplicated by digest across namespaces, so copying a model into a
+second namespace and re-pushing it is essentially free.
+
 ## Building from source
 
 Install prerequisites:

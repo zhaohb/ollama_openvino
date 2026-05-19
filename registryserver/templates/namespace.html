@@ -1,0 +1,26 @@
+{{define "title"}}{{.Namespace}} · Ollama Registry{{end}}
+{{define "content"}}
+<div class="crumbs"><a href="/">Models</a> / {{.Namespace}}</div>
+<h1 class="title">{{.Namespace}}</h1>
+<div class="subtitle">{{len .Models}} model{{if ne (len .Models) 1}}s{{end}} published to <code class="mono">{{.Host}}/{{.Namespace}}</code></div>
+
+{{if .Models}}
+<div class="card-list">
+  {{range .Models}}
+  <div class="row">
+    <div>
+      <div class="name"><a href="/{{$.Namespace}}/{{.Name}}">{{$.Namespace}}/{{.Name}}</a></div>
+      <div class="meta">
+        {{.TagCount}} tag{{if ne .TagCount 1}}s{{end}}
+        {{if .LatestTag}} · latest <code class="mono">:{{.LatestTag}}</code>{{end}}
+        {{if not .UpdatedAt.IsZero}} · updated {{since .UpdatedAt}}{{end}}
+      </div>
+    </div>
+    <div class="right">{{humanSize .TotalSize}}</div>
+  </div>
+  {{end}}
+</div>
+{{else}}
+<div class="empty">No models under this namespace.</div>
+{{end}}
+{{end}}
