@@ -823,9 +823,27 @@ Let's take [deepseek-ai/DeepSeek-R1-Distill-Qwen-7B](https://hf-mirror.com/deeps
          Added image 'C:\path\to\cat.jpg'
          The image shows a close-up of a cat with striking green eyes and tabby markings on its fur...
          ```
-           
 
+### Self-hosted Ollama Registry
 
+After you create OpenVINO models locally (`ollama create`), you can publish them to an **on-prem registry** and pull them on other machines with the same Ollama-OpenVINO client. Public hubs such as `registry.ollama.ai` may strip OpenVINO-specific manifest layers (`modelbackend`, `modeltype`, `inferdevice`). This fork ships **`ollama-registry`** (`cmd/ollama-registry`, implementation in [`registryserver/`](registryserver/)) — a [Docker Distribution v2](https://distribution.github.io/distribution/) API server that stores manifests and blobs **verbatim**, plus a built-in web UI to browse namespaces, models, tags, and layer metadata.
+
+<div align="center">
+  <img src="./images/ollama_registry.png" alt="Ollama Registry self-hosted web UI listing models under namespace zhaohb" width="900">
+</div>
+
+<p align="center"><i>Registry dashboard: namespace overview, tags, sizes, and pull snippets (example host <code>10.239.154.45:5000</code>).</i></p>
+
+**Typical workflow**
+
+1. Start the registry: `ollama-registry serve --addr :5000 --root <storage-dir>`
+2. Set `OLLAMA_REGISTRY` on the machine running `ollama serve` (optional — short names without `host:port`)
+3. `ollama cp` → `ollama push --insecure <namespace>/<model>:<tag>`
+4. On another host: `ollama pull --insecure ...` → `ollama run ...`
+
+GGUF-packaged models created with `ollama create` can be pushed the same way; the registry does not rewrite layer mediaTypes.
+
+See **[Self-hosted OpenVINO model registry](#self-hosted-openvino-model-registry)** below for build commands, `OLLAMA_REGISTRY`, Windows path notes, and HTTPS. More detail: [`registryserver/README.md`](registryserver/README.md).
 
 ### Import from GGUF file（Experimental feature, not recommended for production use.）
 
