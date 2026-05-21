@@ -587,20 +587,20 @@ Getting started with large language models and using the [GenAI](https://github.
 
 ## Current features (OpenVINO backend)
 
-Capabilities below apply when the model uses **`ModelBackend "OpenVINO"`** in the Modelfile (Ollama-OV + [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai)).
+Capabilities below apply when the model uses `ModelBackend "OpenVINO"` in the Modelfile (Ollama-OV + [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai)).
 
-**LLM and VLM** both use OpenVINO GenAI **`chat_history`** on `/api/chat`: full **`messages`**, **tools** / function calling, and **`enable_thinking`** (when the model supports them). **VLM** also sends images from the **latest `role: user`** message (or top-level **`image_data`** as a fallback).
+LLM and VLM both use OpenVINO GenAI `chat_history` on `/api/chat`: full `messages`, tools / function calling, and `enable_thinking` (when the model supports them). VLM also sends images from the latest `role: user` message (or top-level `image_data` as a fallback).
 
 | Area | What works today |
 |------|------------------|
-| **LLM** (`genairunner`) | `ov_genai_llm_pipeline` + **`generate_with_history`**; streaming tokens via the Go callback. |
-| **VLM** (`vlmrunner`) | `ov_genai_vlm_pipeline` + **`generate_with_history`** with the same message / tools / thinking wiring; **images apply to the last user turn only** (see **Model library (VLM)**). Legacy **prompt + `image_data`** still works when no `messages` are sent. |
-| **Chat, tools, thinking** | **`messages`** → `chat_history` + `set_tools` + `extra_context`; multi-turn **`role: "tool"`** + **`tool_call_id`**. Quick check: `python scripts/test_vlm_tools.py`. |
-| **Token usage** | **`ov_genai_perf_metrics`** fills **`prompt_eval_count` / `eval_count`** and OpenAI-style **`usage`** (LLM and VLM). |
-| **Devices** | **CPU**, **GPU**, and **NPU** where the model package and drivers support it (see model tables). |
-| **GGUF (experimental)** | Optional GGUF → GenAI path for development; **not recommended for production** (see **Import from GGUF file** below). |
+| LLM (`genairunner`) | `ov_genai_llm_pipeline` + `generate_with_history`; streaming tokens via the Go callback. |
+| VLM (`vlmrunner`) | `ov_genai_vlm_pipeline` + `generate_with_history` with the same message / tools / thinking wiring; images apply to the last user turn only (see Model library (VLM)). Legacy prompt + `image_data` still works when no `messages` are sent. |
+| Chat, tools, thinking | `messages` → `chat_history` + `set_tools` + `extra_context`; multi-turn `role: "tool"` + `tool_call_id`. Quick check: `python scripts/test_vlm_tools.py`. |
+| Token usage | `ov_genai_perf_metrics` fills `prompt_eval_count` / `eval_count` and OpenAI-style `usage` (LLM and VLM). |
+| Devices | CPU, GPU, and NPU where the model package and drivers support it (see model tables). |
+| GGUF (experimental) | Optional GGUF → GenAI path for development; not recommended for production (see Import from GGUF file below). |
 
-> **中文摘要：** LLM/VLM 均支持 `messages` → **`chat_history`**、工具调用与 **thinking**；VLM 图像绑定**最后一轮 user**。另有真实 **token 统计**、CPU/GPU/NPU 与实验性 GGUF。可用 `scripts/test_vlm_tools.py` 验证 VLM 工具调用。
+> 中文摘要：LLM/VLM 均支持 `messages` → `chat_history`、工具调用与 thinking；VLM 图像绑定最后一轮 user。另有真实 token 统计、CPU/GPU/NPU 与实验性 GGUF。可用 `scripts/test_vlm_tools.py` 验证 VLM 工具调用。
 
 ## Google Drive Download Links
 
@@ -826,7 +826,7 @@ Let's take [deepseek-ai/DeepSeek-R1-Distill-Qwen-7B](https://hf-mirror.com/deeps
 
 ### Self-hosted Ollama Registry
 
-After you create OpenVINO models locally (`ollama create`), you can publish them to an **on-prem registry** and pull them on other machines with the same Ollama-OpenVINO client. Public hubs such as `registry.ollama.ai` may strip OpenVINO-specific manifest layers (`modelbackend`, `modeltype`, `inferdevice`). This fork ships **`ollama-registry`** (`cmd/ollama-registry`, implementation in [`registryserver/`](registryserver/)) — a [Docker Distribution v2](https://distribution.github.io/distribution/) API server that stores manifests and blobs **verbatim**, plus a built-in web UI to browse namespaces, models, tags, and layer metadata.
+After `ollama create`, push models to a private registry with `ollama-registry` ([`registryserver/`](registryserver/)) and pull them on other machines with the same Ollama-OpenVINO build. Unlike `registry.ollama.ai`, it keeps OpenVINO manifest layers (`modelbackend`, `modeltype`, `inferdevice`) unchanged and includes a web UI for namespaces, models, and tags.
 
 <div align="center">
   <img src="./images/ollama_registry.png" alt="Ollama Registry self-hosted web UI listing models under namespace zhaohb" width="900">
