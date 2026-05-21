@@ -832,8 +832,6 @@ After `ollama create`, push models to a private registry with `ollama-registry` 
   <img src="./images/ollama_registry.png" alt="Ollama Registry self-hosted web UI listing models under namespace zhaohb" width="900">
 </div>
 
-<p align="center"><i>Registry dashboard: namespace overview, tags, sizes, and pull snippets (example host <code>10.239.154.45:5000</code>).</i></p>
-
 **Typical workflow**
 
 1. Start the registry: `ollama-registry serve --addr :5000 --root <storage-dir>`
