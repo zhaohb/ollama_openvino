@@ -119,6 +119,10 @@ func (p *Parser) findTag() (int, bool) {
 // parseToolCall finds the next complete tool call in the buffer
 // incrementing n and advancing the buffer.
 func (p *Parser) parseToolCall() *api.ToolCall {
+	if call := p.parseXMLToolCall(); call != nil {
+		return call
+	}
+
 	tool, end := findTool(p.tools, p.buffer)
 	if tool == nil {
 		return nil
@@ -150,6 +154,151 @@ func (p *Parser) parseToolCall() *api.ToolCall {
 	p.n++
 	p.buffer = p.buffer[end:]
 	return tc
+}
+
+// parseXMLToolCall parses Qwen3.5-style XML tool calls:
+//
+//	<tool_call>
+//	<function=get_weather>
+//	<parameter=location>
+//	Paris
+//	</parameter>
+//	</function>
+//	</tool_call>
+//
+// Older Qwen-style JSON calls inside <tool_call> are intentionally ignored
+// here so they continue through the existing JSON parser below.
+func (p *Parser) parseXMLToolCall() *api.ToolCall {
+	const (
+		toolCallClose = "</tool_call>"
+		functionOpen  = "<function="
+		functionClose = "</function>"
+	)
+
+	blockEnd := bytes.Index(p.buffer, []byte(toolCallClose))
+	if blockEnd == -1 {
+		return nil
+	}
+	blockEnd += len(toolCallClose)
+	block := p.buffer[:blockEnd]
+
+	fnStart := bytes.Index(block, []byte(functionOpen))
+	if fnStart == -1 {
+		return nil
+	}
+
+	nameStart := fnStart + len(functionOpen)
+	nameEndRel := bytes.IndexByte(block[nameStart:], '>')
+	if nameEndRel == -1 {
+		return nil
+	}
+	nameEnd := nameStart + nameEndRel
+	name := strings.TrimSpace(string(block[nameStart:nameEnd]))
+	if name == "" {
+		return nil
+	}
+
+	tool := findToolByName(p.tools, name)
+	if tool == nil {
+		return nil
+	}
+
+	bodyStart := nameEnd + 1
+	bodyEnd := bytes.LastIndex(block, []byte(functionClose))
+	if bodyEnd == -1 || bodyEnd < bodyStart {
+		bodyEnd = blockEnd - len(toolCallClose)
+	}
+	argsMap := parseXMLParameters(block[bodyStart:bodyEnd])
+
+	args := api.NewToolCallFunctionArguments()
+	for k, v := range argsMap {
+		args.Set(k, v)
+	}
+
+	tc := &api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name:      tool.Function.Name,
+			Arguments: args,
+			Index:     p.n,
+		},
+	}
+
+	p.n++
+	p.buffer = p.buffer[blockEnd:]
+	return tc
+}
+
+func findToolByName(tools []api.Tool, name string) *api.Tool {
+	for i := range tools {
+		if tools[i].Function.Name == name {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+func parseXMLParameters(body []byte) map[string]any {
+	const (
+		parameterOpen  = "<parameter="
+		parameterClose = "</parameter>"
+	)
+
+	args := map[string]any{}
+	for {
+		paramStart := bytes.Index(body, []byte(parameterOpen))
+		if paramStart == -1 {
+			return args
+		}
+
+		nameStart := paramStart + len(parameterOpen)
+		nameEndRel := bytes.IndexByte(body[nameStart:], '>')
+		if nameEndRel == -1 {
+			return args
+		}
+		nameEnd := nameStart + nameEndRel
+		name := strings.TrimSpace(string(body[nameStart:nameEnd]))
+		if name == "" {
+			return args
+		}
+
+		valueStart := nameEnd + 1
+		valueEndRel := bytes.Index(body[valueStart:], []byte(parameterClose))
+		if valueEndRel == -1 {
+			return args
+		}
+		valueEnd := valueStart + valueEndRel
+		args[name] = parseXMLParameterValue(strings.TrimSpace(string(body[valueStart:valueEnd])))
+
+		body = body[valueEnd+len(parameterClose):]
+	}
+}
+
+func parseXMLParameterValue(value string) any {
+	if value == "" {
+		return ""
+	}
+
+	switch value[0] {
+	case '{', '[', '"':
+		var decoded any
+		if err := json.Unmarshal([]byte(value), &decoded); err == nil {
+			return decoded
+		}
+	case 't', 'f', 'n':
+		var decoded any
+		if err := json.Unmarshal([]byte(value), &decoded); err == nil {
+			return decoded
+		}
+	default:
+		if (value[0] >= '0' && value[0] <= '9') || value[0] == '-' {
+			var decoded any
+			if err := json.Unmarshal([]byte(value), &decoded); err == nil {
+				return decoded
+			}
+		}
+	}
+
+	return value
 }
 
 // findTool finds the first tool name in the list that matches the

@@ -188,6 +188,117 @@ func TestParser(t *testing.T) {
 			},
 		},
 		{
+			name: "qwen35 xml tool call",
+			inputs: []string{`<tool_call>
+<function=get_conditions>
+<parameter=location>
+San Francisco
+</parameter>
+</function>
+</tool_call>`},
+			content: "",
+			tmpl:    qwen,
+			calls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index: 0,
+						Name:  "get_conditions",
+						Arguments: testArgs(map[string]any{
+							"location": "San Francisco",
+						}),
+					},
+				},
+			},
+		},
+		{
+			name: "qwen35 xml tool call with multiple parameters",
+			inputs: []string{`I'll check. <tool_call>
+<function=get_temperature>
+<parameter=city>
+London
+</parameter>
+<parameter=format>
+fahrenheit
+</parameter>
+</function>
+</tool_call>`},
+			content: "I'll check. ",
+			tmpl:    qwen,
+			calls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index: 0,
+						Name:  "get_temperature",
+						Arguments: testArgs(map[string]any{
+							"city":   "London",
+							"format": "fahrenheit",
+						}),
+					},
+				},
+			},
+		},
+		{
+			name: "qwen35 xml two tool calls",
+			inputs: []string{`<tool_call>
+<function=get_temperature>
+<parameter=city>
+London
+</parameter>
+</function>
+</tool_call><tool_call>
+<function=get_conditions>
+<parameter=location>
+Tokyo
+</parameter>
+</function>
+</tool_call>`},
+			content: "",
+			tmpl:    qwen,
+			calls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index: 0,
+						Name:  "get_temperature",
+						Arguments: testArgs(map[string]any{
+							"city": "London",
+						}),
+					},
+				},
+				{
+					Function: api.ToolCallFunction{
+						Index: 1,
+						Name:  "get_conditions",
+						Arguments: testArgs(map[string]any{
+							"location": "Tokyo",
+						}),
+					},
+				},
+			},
+		},
+		{
+			name: "qwen35 xml json parameter value",
+			inputs: []string{`<tool_call>
+<function=get_conditions>
+<parameter=location>
+{"city":"San Francisco","country":"US"}
+</parameter>
+</function>
+</tool_call>`},
+			content: "",
+			tmpl:    qwen,
+			calls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index: 0,
+						Name:  "get_conditions",
+						Arguments: testArgs(map[string]any{
+							"location": map[string]any{"city": "San Francisco", "country": "US"},
+						}),
+					},
+				},
+			},
+		},
+		{
 			name:    "empty args",
 			inputs:  []string{`<tool_call>{"name": "get_conditions", "arguments": {}}</tool_call>`},
 			content: "",
