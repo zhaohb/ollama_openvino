@@ -2,6 +2,8 @@
 
 This package implements a **Docker Distribution Registry API v2** subset for distributing models inside the Ollama OpenVINO fork. Unlike the public `registry.ollama.ai`, this service **does not parse or strip** OpenVINO-specific layers (e.g. `application/vnd.ollama.image.modelbackend`, `modeltype`, `inferdevice`); manifests are stored verbatim.
 
+It also adds a built-in **username/password account system** with **per-model public/private visibility**: anyone can pull public models, but pushing requires a logged-in account and you can keep models private to your own namespace. See [Accounts & per-model visibility](#accounts--per-model-visibility).
+
 The executable entry point lives at the repo root: `cmd/ollama-registry`.
 
 ## Quick start
@@ -170,28 +172,99 @@ This is unrelated to `OLLAMA_REGISTRY`; you need both. For production, put TLS i
 |------------|---------|
 | `--addr` | Listen address; default `:5000` |
 | `--root` | Storage root (required); see layout below |
-| `--token` / `OLLAMA_REGISTRY_TOKEN` | If set, every request except `GET /v2/` needs `Authorization: Bearer <token>` |
+| `--token` / `OLLAMA_REGISTRY_TOKEN` | Optional **global admin token**. If set, every request except `GET /v2/` needs `Authorization: Bearer <token>`, and that token has full read/write across all namespaces (operators / CI). |
+| `--disable-signup` | Disable open registration. Existing accounts can still log in; new ones must be created out of band. |
+| `--cookie-secure` | Mark the session cookie `Secure` (HTTPS deployments) |
 
 ```powershell
-.\ollama-registry.exe serve --addr :5000 --root C:\ollama-registry --token my-secret
+.\ollama-registry.exe serve --addr :5000 --root C:\ollama-registry
 ```
 
-Clients doing push/pull must send the same Bearer token (see Ollama client/registry options).
+No flags are required to enable login — the account system below is always on.
+
+---
+
+## Accounts & per-model visibility
+
+The registry has a **built-in username/password account system** (always on, no
+external identity provider needed):
+
+- **Anonymous visitors** may browse and pull **public** models only.
+- **Register** an account from the header (`Register`) — open registration by
+  default (turn off with `--disable-signup`). Your **username becomes your
+  namespace**: user `alice` owns `alice/*`. Usernames are case-insensitive and
+  must satisfy the same character rules as a namespace.
+- **Only the namespace owner may push.** Anonymous or cross-namespace pushes are
+  rejected with `403`.
+- A logged-in user sees **their own models plus everyone's public models**.
+  Other users' **private** models are hidden from the dashboard, the JSON API,
+  and OCI pulls (`/v2/...` returns `404 MANIFEST_UNKNOWN`, so a private model is
+  indistinguishable from a missing one).
+- **New pushes are private by default.** Toggle a model to public from its page
+  on the dashboard (`/<you>/<model>`).
+
+### Logging in (browser)
+
+Open `http://127.0.0.1:5000/`, click **Register** (or **Sign in**), and you're
+taken to your namespace page. Sessions are kept in memory: a server restart
+signs everyone out, but accounts themselves persist.
+
+### Pushing your own models
+
+```powershell
+# After registering "alice" and signing in via the browser on the same host,
+# push to your own namespace (only alice may write to alice/*):
+ollama push --insecure 127.0.0.1:5000/alice/qwen3-4b-ov:v1
+```
+
+The CLI itself doesn't carry your browser session, so for push/pull from the
+command line use a **personal access token** (next section).
+
+### Pulling a PRIVATE model from the CLI
+
+`ollama pull` can't send a browser cookie, so generate a **personal access
+token** on your namespace page (`/<you>` → *Generate token*) and pass it as a
+Bearer token. Public pulls need nothing.
+
+```powershell
+$env:OLLAMA_REGISTRY_TOKEN = "<personal token>"
+ollama pull --insecure 127.0.0.1:5000/alice/secret-model:v1
+```
+
+### Self-service API
+
+These endpoints require a logged-in session and act only on the caller's own
+namespace:
+
+| Endpoint | Effect |
+|----------|--------|
+| `POST /api/account/token` | Issue a new personal access token (returned once) |
+| `POST /api/account/token/revoke` | Revoke all of your personal tokens |
+| `POST /api/account/visibility/<model>` | Set your model public/private (`public=true|false`) |
+
+Accounts, visibility, and tokens are stored as small JSON files under the root
+(`auth/users.json`, `auth/visibility.json`, `auth/tokens.json`). Passwords are
+bcrypt-hashed; personal tokens are stored only as sha256 hashes.
 
 ---
 
 ## Web dashboard
 
-The same process serves a read-only browser UI alongside `/v2/`:
+The same process serves a browser UI alongside `/v2/`. Listings are
+**visibility-filtered** for the signed-in user (see *Accounts* above):
 
 | URL | Description |
 |-----|-------------|
-| `http://127.0.0.1:5000/` | Namespace overview |
-| `http://127.0.0.1:5000/<namespace>` | Model list |
-| `http://127.0.0.1:5000/<namespace>/<model>` | Tag list (with copy-paste pull snippets) |
+| `http://127.0.0.1:5000/` | Namespace overview + Sign in / Register |
+| `http://127.0.0.1:5000/<namespace>` | Model list; owners get a *Generate token* panel |
+| `http://127.0.0.1:5000/<namespace>/<model>` | Tag list, public/private badge, owner *Make public/private* toggle |
 | `http://127.0.0.1:5000/<namespace>/<model>/<tag>` | Tag detail, OpenVINO metadata preview |
+| `/auth/register`, `/auth/login`, `/auth/logout` | Account pages |
 
-JSON API: `GET /api/registry/namespaces`, `/api/registry/<ns>`, … (see `handleAPI` in `server.go`).
+A read-only JSON API also exists (`GET /api/registry/namespaces`,
+`/api/registry/<ns>`, `/api/registry/<ns>/<model>`,
+`/api/registry/<ns>/<model>/<tag>`); it applies the same visibility rules. It
+has no header link by design — it's for programmatic use.
 
 When using a reverse proxy, forward `X-Forwarded-Host` and `X-Forwarded-Proto` so upload `Location` headers and pull snippets use the public hostname.
 
@@ -201,12 +274,17 @@ When using a reverse proxy, forward `X-Forwarded-Host` and `X-Forwarded-Proto` s
 
 ```text
 <root>/
-  blobs/sha256-<hex>                 # committed blobs
-  uploads/<uuid>                     # in-progress uploads
+  blobs/sha256-<hex>                   # committed blobs
+  uploads/<uuid>                       # in-progress uploads
   manifests/<namespace>/<model>/<tag>  # manifest JSON
+  auth/users.json                      # username -> bcrypt password hash
+  auth/visibility.json                 # "<ns>/<model>" -> "public" (absent = private)
+  auth/tokens.json                     # sha256(personal token) -> username
 ```
 
-See `store.go` for persistence; `server.go` for HTTP routing and OCI behavior (blob Range, chunked upload, manifest PUT, etc.).
+See `store.go` / `visibility.go` for persistence; `auth.go` for accounts and
+sessions; `server.go` for HTTP routing and OCI behavior (blob Range, chunked
+upload, manifest PUT, etc.).
 
 ---
 
@@ -220,9 +298,14 @@ See `store.go` for persistence; `server.go` for HTTP routing and OCI behavior (b
 ## Development
 
 ```powershell
-go test ./registryserver/...
+go build -o ollama-registry.exe .\cmd\ollama-registry   # build
+go vet ./registryserver/                                 # static checks
+go test ./registryserver/...                             # tests
 ```
 
-The `registryserver` package is imported by `cmd/ollama-registry`; rebuild after changing embedded templates.
+The `registryserver` package is imported by `cmd/ollama-registry`; **rebuild
+after changing embedded templates** (HTML under `templates/` is compiled into
+the binary via `go:embed`). Password hashing uses `golang.org/x/crypto/bcrypt`
+(already in `go.mod`).
 
 For a broader OpenVINO workflow, see **Self-hosted OpenVINO model registry** in the repo root [README.md](../README.md).

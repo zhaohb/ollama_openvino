@@ -157,7 +157,13 @@
     <span class="badge">self-hosted</span>
     <nav>
       <a href="/">Models</a>
-      <a href="/api/registry/namespaces">API</a>
+      {{if .Login}}
+        <a href="/{{.Login}}">@{{.Login}}</a>
+        <a href="/auth/logout">Sign out</a>
+      {{else}}
+        <a href="/auth/login">Sign in</a>
+        {{if .CanSignup}}<a href="/auth/register">Register</a>{{end}}
+      {{end}}
     </nav>
   </div>
 </header>

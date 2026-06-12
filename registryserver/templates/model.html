@@ -1,8 +1,53 @@
 {{define "title"}}{{.Namespace}}/{{.Model}} · Ollama Registry{{end}}
 {{define "content"}}
 <div class="crumbs"><a href="/">Models</a> / <a href="/{{.Namespace}}">{{.Namespace}}</a> / {{.Model}}</div>
-<h1 class="title">{{.Namespace}}/{{.Model}}</h1>
+<h1 class="title">
+  {{.Namespace}}/{{.Model}}
+  {{if .IsPublic}}<span class="mt-badge" style="background:#e7f7ec;color:#1a7f37">public</span>
+  {{else}}<span class="mt-badge" style="background:#fdeaea;color:#b3261e">private</span>{{end}}
+</h1>
 <div class="subtitle">{{len .Tags}} tag{{if ne (len .Tags) 1}}s{{end}} stored on this registry.</div>
+
+{{if .IsOwner}}
+<section class="box">
+  <h3>Visibility</h3>
+  <p class="subtitle" style="margin-top:0">
+    {{if .IsPublic}}This model is <strong>public</strong> — anyone can see and pull it.
+    {{else}}This model is <strong>private</strong> — only you can see and pull it.{{end}}
+  </p>
+  <button id="visBtn" type="button"
+          data-ns="{{.Namespace}}" data-model="{{.Model}}" data-public="{{.IsPublic}}"
+          style="padding:8px 14px;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg);cursor:pointer">
+    {{if .IsPublic}}Make private{{else}}Make public{{end}}
+  </button>
+  <span id="visMsg" class="subtitle" style="margin-left:10px"></span>
+</section>
+<script>
+(function () {
+  var btn = document.getElementById("visBtn");
+  if (!btn) return;
+  btn.addEventListener("click", function () {
+    var makePublic = btn.getAttribute("data-public") !== "true";
+    var model = btn.getAttribute("data-model");
+    var body = new URLSearchParams(); body.set("public", makePublic ? "true" : "false");
+    btn.disabled = true;
+    fetch("/api/account/visibility/" + encodeURIComponent(model), {
+      method: "POST",
+      headers: {"Content-Type": "application/x-www-form-urlencoded"},
+      body: body.toString(),
+    }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function () {
+      location.reload();
+    }).catch(function (e) {
+      btn.disabled = false;
+      document.getElementById("visMsg").textContent = "Failed: " + e.message;
+    });
+  });
+})();
+</script>
+{{end}}
 
 {{if .Tags}}
 <section class="box">

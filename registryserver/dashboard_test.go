@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -20,7 +21,9 @@ import (
 // returns the manifest body for downstream assertions.
 func seedOpenVINOModel(t *testing.T, srv *httptest.Server, namespace, model, tag string) []byte {
 	t.Helper()
-	c := srv.Client()
+	// Pushing requires auth; the test server runs with the admin token, so push
+	// as admin (full write across namespaces).
+	c := adminClient()
 
 	blobs := []struct {
 		mediaType string
@@ -99,7 +102,52 @@ func seedOpenVINOModel(t *testing.T, srv *httptest.Server, namespace, model, tag
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("manifest status = %d", resp.StatusCode)
 	}
+	// Models are private by default; these dashboard/listing tests assert on
+	// visible content, so publish the seeded model. Visibility is keyed per
+	// (namespace, model), so this is idempotent across multiple tags.
+	publishModel(t, srv.URL, namespace, model)
 	return manifest
+}
+
+// publishModel marks namespace/model public. The visibility API is owner-scoped
+// (acts on the logged-in user's own namespace), so we register+log in as that
+// namespace through the public endpoints, then flip visibility — exercising the
+// real account API path end to end.
+func publishModel(t *testing.T, base, namespace, model string) {
+	t.Helper()
+	jar := mustJar()
+	c := &http.Client{Jar: jar, Transport: http.DefaultTransport}
+	form := "username=" + namespace + "&password=seedpassword"
+	// Register (the client follows the post-register redirect, so a success lands
+	// on the namespace page as 200; a duplicate account returns 400).
+	resp, err := c.Post(base+"/auth/register", "application/x-www-form-urlencoded", strings.NewReader(form))
+	if err != nil {
+		t.Fatalf("register %s: %v", namespace, err)
+	}
+	resp.Body.Close()
+	// If the account already exists (400, e.g. a second tag of the same
+	// namespace), log in instead to obtain a session.
+	if resp.StatusCode == http.StatusBadRequest {
+		resp, err = c.Post(base+"/auth/login", "application/x-www-form-urlencoded", strings.NewReader(form))
+		if err != nil {
+			t.Fatalf("login %s: %v", namespace, err)
+		}
+		resp.Body.Close()
+	}
+	resp, err = c.Post(base+"/api/account/visibility/"+model,
+		"application/x-www-form-urlencoded", strings.NewReader("public=true"))
+	if err != nil {
+		t.Fatalf("set visibility: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set visibility status = %d", resp.StatusCode)
+	}
+}
+
+func mustJar() http.CookieJar {
+	jar, _ := cookiejar.New(nil)
+	return jar
 }
 
 func TestStoreListingAggregatesPushedModels(t *testing.T) {
@@ -107,7 +155,7 @@ func TestStoreListingAggregatesPushedModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewServer(store, nil, ""))
+	srv := httptest.NewServer(NewServer(store, nil, testAdminToken, nil))
 	t.Cleanup(func() { srv.Close(); store.Close() })
 
 	seedOpenVINOModel(t, srv, "zhaohb", "qwen3-4b-ov", "v1")
@@ -176,7 +224,7 @@ func TestDashboardRoutesRenderHTML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewServer(store, nil, ""))
+	srv := httptest.NewServer(NewServer(store, nil, testAdminToken, nil))
 	t.Cleanup(func() { srv.Close(); store.Close() })
 
 	seedOpenVINOModel(t, srv, "zhaohb", "qwen3-4b-ov", "v1")
@@ -222,7 +270,7 @@ func TestDashboardJSONAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewServer(store, nil, ""))
+	srv := httptest.NewServer(NewServer(store, nil, testAdminToken, nil))
 	t.Cleanup(func() { srv.Close(); store.Close() })
 
 	seedOpenVINOModel(t, srv, "zhaohb", "qwen3-4b-ov", "v1")
@@ -287,7 +335,7 @@ func TestDashboardServesOnEmptyRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewServer(store, nil, ""))
+	srv := httptest.NewServer(NewServer(store, nil, testAdminToken, nil))
 	t.Cleanup(func() { srv.Close(); store.Close() })
 
 	resp, err := srv.Client().Get(srv.URL + "/")
@@ -311,10 +359,10 @@ func TestDashboardDoesNotMaskV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewServer(store, nil, ""))
+	srv := httptest.NewServer(NewServer(store, nil, testAdminToken, nil))
 	t.Cleanup(func() { srv.Close(); store.Close() })
 
-	c := srv.Client()
+	c := adminClient()
 	resp, err := c.Get(srv.URL + "/v2/")
 	if err != nil {
 		t.Fatal(err)
@@ -350,10 +398,10 @@ func TestManifestPutStripsLocalFromPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewServer(store, nil, ""))
+	srv := httptest.NewServer(NewServer(store, nil, testAdminToken, nil))
 	t.Cleanup(func() { srv.Close(); store.Close() })
 
-	c := srv.Client()
+	c := adminClient()
 	body := []byte("dummy-blob-content")
 	digest := pushBlob(t, c, srv.URL, "zhaohb/leak", body)
 

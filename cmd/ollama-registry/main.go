@@ -51,12 +51,25 @@ func usage(w *os.File) {
 Self-hosted Ollama Registry v2 server that supports OpenVINO model layers.
 
 Flags:
-  --addr string   Listen address (default ":5000")
-  --root string   Storage root for blobs, uploads and manifests (required)
-  --token string  Optional Bearer token required on every request
+  --addr string      Listen address (default ":5000")
+  --root string      Storage root for blobs, uploads and manifests (required)
+  --token string     Optional global Bearer token required on every request
+  --disable-signup   Disable open registration (existing accounts can still log in)
+  --cookie-secure    Mark the session cookie Secure (HTTPS deployments)
 
 Environment:
   OLLAMA_REGISTRY_TOKEN  Same effect as --token, useful for service managers.
+
+This registry has a built-in username/password account system (always on):
+  * Anonymous visitors may browse and pull PUBLIC models only.
+  * Register an account on the dashboard; your username becomes your namespace.
+  * Only the namespace owner may push (login == namespace).
+  * New pushes are PRIVATE by default — mark a model public from its page on
+    the dashboard. A logged-in user sees their own models plus everyone's public
+    models; other users' private models are hidden from the dashboard, the JSON
+    API, and OCI pulls.
+  * To pull a PRIVATE model with the CLI, create a personal token on your
+    namespace page and pass it as a Bearer token (OLLAMA_REGISTRY_TOKEN).
 
 Once the server is running, point Ollama at it with the http scheme and the
 --insecure flag, e.g.:
@@ -70,6 +83,8 @@ func runServe(args []string) error {
 	addr := fs.String("addr", ":5000", "listen address")
 	root := fs.String("root", "", "storage root directory")
 	token := fs.String("token", os.Getenv("OLLAMA_REGISTRY_TOKEN"), "optional Bearer token")
+	disableSignup := fs.Bool("disable-signup", false, "disable open registration")
+	cookieSecure := fs.Bool("cookie-secure", false, "mark session cookie Secure (HTTPS only)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -83,8 +98,13 @@ func runServe(args []string) error {
 	}
 	defer store.Close()
 
+	auth := &registryserver.AuthConfig{
+		DisableSignup: *disableSignup,
+		CookieSecure:  *cookieSecure,
+	}
+
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	handler := registryserver.NewServer(store, logger, *token)
+	handler := registryserver.NewServer(store, logger, *token, auth)
 
 	server := &http.Server{
 		Addr:              *addr,
@@ -92,7 +112,8 @@ func runServe(args []string) error {
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 
-	logger.Info("ollama-registry serving", "addr", *addr, "root", store.Root, "auth", *token != "")
+	logger.Info("ollama-registry serving", "addr", *addr, "root", store.Root,
+		"token_auth", *token != "", "signup", !auth.DisableSignup)
 
 	idle := make(chan struct{})
 	go func() {

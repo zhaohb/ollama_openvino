@@ -47,6 +47,7 @@ func newDashboard() (*dashboard, error) {
 		"namespace": "templates/layout.html,templates/namespace.html",
 		"model":     "templates/layout.html,templates/model.html",
 		"tag":       "templates/layout.html,templates/tag.html",
+		"auth":      "templates/layout.html,templates/auth.html",
 	}
 	out := &dashboard{pages: make(map[string]*template.Template, len(pages))}
 	for name, files := range pages {
@@ -63,8 +64,10 @@ func newDashboard() (*dashboard, error) {
 // pageBase is the shared context every template expects (layout uses it for
 // footer + brand and child templates may use it for absolute pull commands).
 type pageBase struct {
-	Host      string
-	Generated string
+	Host       string
+	Generated  string
+	Login      string // logged-in user ("" if anonymous)
+	CanSignup  bool   // open registration available (controls the Register link)
 }
 
 func (s *Server) basePage(r *http.Request) pageBase {
@@ -75,9 +78,12 @@ func (s *Server) basePage(r *http.Request) pageBase {
 	if host == "" {
 		host = "127.0.0.1:5000"
 	}
+	login, _ := s.currentUser(r)
 	return pageBase{
 		Host:      host,
 		Generated: time.Now().Format("2006-01-02 15:04:05 MST"),
+		Login:     login,
+		CanSignup: !s.Auth.DisableSignup,
 	}
 }
 
@@ -102,7 +108,8 @@ type namespaceCard struct {
 }
 
 func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
-	overview, err := s.collectOverview()
+	login, _ := s.currentUser(r)
+	overview, err := s.collectOverview(login)
 	if err != nil {
 		http.Error(w, "overview: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -120,6 +127,7 @@ type namespaceData struct {
 	pageBase
 	Namespace string
 	Models    []modelCard
+	IsOwner   bool // viewer owns this namespace (can manage personal tokens)
 }
 
 type modelCard struct {
@@ -131,7 +139,8 @@ type modelCard struct {
 }
 
 func (s *Server) renderNamespace(w http.ResponseWriter, r *http.Request, namespace string) {
-	models, err := s.collectNamespace(namespace)
+	login, _ := s.currentUser(r)
+	models, err := s.collectNamespace(namespace, login)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			http.Error(w, "namespace not found", http.StatusNotFound)
@@ -140,10 +149,17 @@ func (s *Server) renderNamespace(w http.ResponseWriter, r *http.Request, namespa
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// A namespace with nothing visible to this viewer is reported as not found,
+	// so private namespaces don't leak via an empty page.
+	if len(models) == 0 && login != namespace {
+		http.Error(w, "namespace not found", http.StatusNotFound)
+		return
+	}
 	data := namespaceData{
 		pageBase:  s.basePage(r),
 		Namespace: namespace,
 		Models:    models,
+		IsOwner:   login == namespace,
 	}
 	s.renderTemplate(w, "namespace", data)
 }
@@ -154,6 +170,8 @@ type modelData struct {
 	Namespace string
 	Model     string
 	Tags      []tagCard
+	IsOwner   bool // viewer owns this namespace (can toggle visibility)
+	IsPublic  bool // current visibility
 }
 
 type tagCard struct {
@@ -168,6 +186,10 @@ type tagCard struct {
 }
 
 func (s *Server) renderModel(w http.ResponseWriter, r *http.Request, namespace, model string) {
+	if !s.canView(r, namespace, model) {
+		http.Error(w, "model not found", http.StatusNotFound)
+		return
+	}
 	tags, err := s.collectModel(namespace, model)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -182,6 +204,8 @@ func (s *Server) renderModel(w http.ResponseWriter, r *http.Request, namespace, 
 		Namespace: namespace,
 		Model:     model,
 		Tags:      tags,
+		IsOwner:   s.isOwner(r, namespace),
+		IsPublic:  s.Store.IsPublic(namespace, model),
 	}
 	s.renderTemplate(w, "model", data)
 }
@@ -197,6 +221,10 @@ type tagData struct {
 }
 
 func (s *Server) renderTag(w http.ResponseWriter, r *http.Request, namespace, model, tag string) {
+	if !s.canView(r, namespace, model) {
+		http.Error(w, "tag not found", http.StatusNotFound)
+		return
+	}
 	info, err := s.Store.InspectManifest(namespace, model, tag)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -225,6 +253,28 @@ func (s *Server) renderTag(w http.ResponseWriter, r *http.Request, namespace, mo
 	s.renderTemplate(w, "tag", data)
 }
 
+// authData feeds the login/register page.
+type authData struct {
+	pageBase
+	Mode  string // "login" or "register"
+	Error string
+}
+
+// renderAuthForm renders the login or register page with an optional error.
+func (s *Server) renderAuthForm(w http.ResponseWriter, r *http.Request, mode, errMsg string) {
+	// A failed POST should not return 200; but the form is the same page, so we
+	// render it with the error message and a 200 for GET, 400 when reporting an
+	// error on POST.
+	if errMsg != "" && r.Method == http.MethodPost {
+		w.WriteHeader(http.StatusBadRequest)
+	}
+	s.renderTemplate(w, "auth", authData{
+		pageBase: s.basePage(r),
+		Mode:     mode,
+		Error:    errMsg,
+	})
+}
+
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	tpl, ok := s.dashboard.pages[name]
@@ -248,7 +298,7 @@ type overview struct {
 	namespaces []namespaceCard
 }
 
-func (s *Server) collectOverview() (*overview, error) {
+func (s *Server) collectOverview(login string) (*overview, error) {
 	out := &overview{}
 	nss, err := s.Store.ListNamespaces()
 	if err != nil {
@@ -258,6 +308,12 @@ func (s *Server) collectOverview() (*overview, error) {
 		models, err := s.Store.ListModels(ns)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return nil, err
+		}
+		// Keep only models the viewer may see (own + public). When auth is
+		// disabled, visibleModels returns everything.
+		models = s.visibleModels(ns, models, login)
+		if len(models) == 0 {
+			continue // namespace has nothing visible to this viewer
 		}
 		var nsSize int64
 		for _, m := range models {
@@ -282,15 +338,31 @@ func (s *Server) collectOverview() (*overview, error) {
 			TotalSize:  nsSize,
 		})
 	}
-	out.stats.Namespaces = len(nss)
+	out.stats.Namespaces = len(out.namespaces)
 	return out, nil
 }
 
-func (s *Server) collectNamespace(ns string) ([]modelCard, error) {
+// visibleModels filters a namespace's model list to those the viewer may see:
+// the viewer's own models (login == namespace) plus any model marked public.
+func (s *Server) visibleModels(namespace string, models []string, login string) []string {
+	if login == namespace {
+		return models // owner sees all their own models
+	}
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		if s.Store.IsPublic(namespace, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (s *Server) collectNamespace(ns, login string) ([]modelCard, error) {
 	models, err := s.Store.ListModels(ns)
 	if err != nil {
 		return nil, err
 	}
+	models = s.visibleModels(ns, models, login)
 	out := make([]modelCard, 0, len(models))
 	for _, m := range models {
 		tags, err := s.Store.ListTags(ns, m)
@@ -380,6 +452,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		parts = strings.Split(rest, "/")
 	}
 
+	login, _ := s.currentUser(r)
+
 	switch len(parts) {
 	case 0:
 		s.writeJSON(w, map[string]any{"endpoints": []string{
@@ -391,6 +465,11 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	case 1:
 		if parts[0] == "namespaces" {
 			nss, err := s.Store.ListNamespaces()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
+				return
+			}
+			nss, err = s.Store.visibleNamespaces(nss, login)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
 				return
@@ -407,8 +486,18 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
 			return
 		}
+		models = s.visibleModels(parts[0], models, login)
+		if len(models) == 0 && login != parts[0] {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "namespace not found")
+			return
+		}
 		s.writeJSON(w, map[string]any{"namespace": parts[0], "models": models})
 	case 2:
+		// A private model is reported as not found to non-owners.
+		if !s.canView(r, parts[0], parts[1]) {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "model not found")
+			return
+		}
 		tags, err := s.Store.ListTags(parts[0], parts[1])
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "model not found")
@@ -420,6 +509,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeJSON(w, map[string]any{"namespace": parts[0], "model": parts[1], "tags": tags})
 	case 3:
+		if !s.canView(r, parts[0], parts[1]) {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "tag not found")
+			return
+		}
 		info, err := s.Store.InspectManifest(parts[0], parts[1], parts[2])
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "tag not found")

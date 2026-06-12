@@ -13,13 +13,18 @@ import (
 	"testing"
 )
 
+// testAdminToken is the global admin token the test server runs with. The
+// account system requires auth to push, so the OCI-mechanics tests authenticate
+// as the admin (full read/write) via adminClient rather than registering users.
+const testAdminToken = "test-admin-token"
+
 func newTestServer(t *testing.T) (*httptest.Server, *Store) {
 	t.Helper()
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewServer(store, nil, ""))
+	srv := httptest.NewServer(NewServer(store, nil, testAdminToken, nil))
 	t.Cleanup(func() {
 		srv.Close()
 		store.Close()
@@ -27,14 +32,64 @@ func newTestServer(t *testing.T) (*httptest.Server, *Store) {
 	return srv, store
 }
 
+// adminTransport injects the admin Bearer token on every request.
+type adminTransport struct{ base http.RoundTripper }
+
+func (a adminTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r.Header.Set("Authorization", "Bearer "+testAdminToken)
+	return a.base.RoundTrip(r)
+}
+
+// adminClient returns an http.Client that authenticates as the admin token, so
+// OCI push/pull mechanics tests don't need per-user sessions.
+func adminClient() *http.Client {
+	return &http.Client{Transport: adminTransport{base: http.DefaultTransport}}
+}
+
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// pushBlob uploads body to repo via the OCI POST/PATCH/PUT dance and returns its
+// canonical digest. It is a standalone counterpart to the inline push closure in
+// seedOpenVINOModel, used by tests that need a single blob in place before
+// putting a manifest that references it.
+func pushBlob(t *testing.T, c *http.Client, base, repo string, body []byte) string {
+	t.Helper()
+	digest := sha256Hex(body)
+	resp, err := c.Post(base+"/v2/"+repo+"/blobs/uploads/", "", nil)
+	if err != nil {
+		t.Fatalf("post upload: %v", err)
+	}
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+
+	req, _ := http.NewRequest(http.MethodPatch, loc, bytes.NewReader(body))
+	req.Header.Set("Content-Range", fmt.Sprintf("0-%d", len(body)-1))
+	resp, err = c.Do(req)
+	if err != nil {
+		t.Fatalf("patch upload: %v", err)
+	}
+	resp.Body.Close()
+
+	req, _ = http.NewRequest(http.MethodPut, loc+"?digest="+digest, nil)
+	req.ContentLength = 0
+	resp, err = c.Do(req)
+	if err != nil {
+		t.Fatalf("put commit: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("commit status = %d", resp.StatusCode)
+	}
+	return digest
+}
+
 func TestAPIRoot(t *testing.T) {
 	srv, _ := newTestServer(t)
-	resp, err := http.Get(srv.URL + "/v2/")
+	ac := adminClient()
+	resp, err := ac.Get(srv.URL + "/v2/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,11 +104,12 @@ func TestAPIRoot(t *testing.T) {
 
 func TestUploadCommitAndDownload(t *testing.T) {
 	srv, _ := newTestServer(t)
+	ac := adminClient()
 	payload := []byte("hello openvino registry")
 	digest := sha256Hex(payload)
 
 	// Start upload session.
-	resp, err := http.Post(srv.URL+"/v2/zhaohb/qwen3-4b-ov/blobs/uploads/", "", nil)
+	resp, err := ac.Post(srv.URL+"/v2/zhaohb/qwen3-4b-ov/blobs/uploads/", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +130,7 @@ func TestUploadCommitAndDownload(t *testing.T) {
 	}
 	req.Header.Set("Content-Range", fmt.Sprintf("0-%d", len(payload)-1))
 	req.Header.Set("Content-Type", "application/octet-stream")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ac.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +145,7 @@ func TestUploadCommitAndDownload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ac.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +159,7 @@ func TestUploadCommitAndDownload(t *testing.T) {
 
 	// HEAD should now report the size.
 	req, _ = http.NewRequest(http.MethodHead, srv.URL+"/v2/zhaohb/qwen3-4b-ov/blobs/"+digest, nil)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ac.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +172,7 @@ func TestUploadCommitAndDownload(t *testing.T) {
 	}
 
 	// Full download.
-	resp, err = http.Get(srv.URL + "/v2/zhaohb/qwen3-4b-ov/blobs/" + digest)
+	resp, err = ac.Get(srv.URL + "/v2/zhaohb/qwen3-4b-ov/blobs/" + digest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +185,7 @@ func TestUploadCommitAndDownload(t *testing.T) {
 	// Range download.
 	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/v2/zhaohb/qwen3-4b-ov/blobs/"+digest, nil)
 	req.Header.Set("Range", "bytes=6-12")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ac.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,12 +201,13 @@ func TestUploadCommitAndDownload(t *testing.T) {
 
 func TestSingleShotUploadWithDigestQuery(t *testing.T) {
 	srv, _ := newTestServer(t)
+	ac := adminClient()
 	payload := []byte("openvino-quick")
 	digest := sha256Hex(payload)
 
 	url := srv.URL + "/v2/zhaohb/qwen3-2b-vl/blobs/uploads/?digest=" + digest
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ac.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,10 +222,11 @@ func TestSingleShotUploadWithDigestQuery(t *testing.T) {
 
 func TestDigestMismatchRejected(t *testing.T) {
 	srv, _ := newTestServer(t)
+	ac := adminClient()
 	payload := []byte("payload-A")
 
 	// Start upload + PUT with the wrong digest.
-	resp, err := http.Post(srv.URL+"/v2/zhaohb/openvino/blobs/uploads/", "", nil)
+	resp, err := ac.Post(srv.URL+"/v2/zhaohb/openvino/blobs/uploads/", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +235,7 @@ func TestDigestMismatchRejected(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodPatch, loc, bytes.NewReader(payload))
 	req.Header.Set("Content-Range", "0-8")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ac.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +243,7 @@ func TestDigestMismatchRejected(t *testing.T) {
 
 	wrong := "sha256:" + strings.Repeat("0", 64)
 	req, _ = http.NewRequest(http.MethodPut, loc+"?digest="+wrong, nil)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = ac.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,12 +255,13 @@ func TestDigestMismatchRejected(t *testing.T) {
 
 func TestManifestRoundTripPreservesOpenVINOLayers(t *testing.T) {
 	srv, _ := newTestServer(t)
+	ac := adminClient()
 
 	payload := []byte("OpenVINO")
 	digest := sha256Hex(payload)
 	postURL := srv.URL + "/v2/zhaohb/qwen3-4b-ov/blobs/uploads/?digest=" + digest
 	req, _ := http.NewRequest(http.MethodPost, postURL, bytes.NewReader(payload))
-	if resp, err := http.DefaultClient.Do(req); err != nil {
+	if resp, err := ac.Do(req); err != nil {
 		t.Fatal(err)
 	} else {
 		resp.Body.Close()
@@ -241,7 +300,7 @@ func TestManifestRoundTripPreservesOpenVINOLayers(t *testing.T) {
 
 	req, _ = http.NewRequest(http.MethodPut, srv.URL+"/v2/zhaohb/qwen3-4b-ov/manifests/v1", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ac.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +309,7 @@ func TestManifestRoundTripPreservesOpenVINOLayers(t *testing.T) {
 		t.Fatalf("put manifest status = %d", resp.StatusCode)
 	}
 
-	resp, err = http.Get(srv.URL + "/v2/zhaohb/qwen3-4b-ov/manifests/v1")
+	resp, err = ac.Get(srv.URL + "/v2/zhaohb/qwen3-4b-ov/manifests/v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +330,7 @@ func TestTokenAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewServer(store, nil, "secret"))
+	srv := httptest.NewServer(NewServer(store, nil, "secret", nil))
 	t.Cleanup(func() {
 		srv.Close()
 		store.Close()
@@ -300,6 +359,7 @@ func TestTokenAuthorization(t *testing.T) {
 		t.Fatal("missing WWW-Authenticate bearer challenge")
 	}
 
+	// The admin token satisfies both the transport gate and the push gate.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v2/zhaohb/x/blobs/uploads/", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	resp, err = http.DefaultClient.Do(req)
@@ -314,7 +374,8 @@ func TestTokenAuthorization(t *testing.T) {
 
 func TestNameValidationRejected(t *testing.T) {
 	srv, _ := newTestServer(t)
-	resp, err := http.Get(srv.URL + "/v2/..%2Fbad/foo/manifests/latest")
+	ac := adminClient()
+	resp, err := ac.Get(srv.URL + "/v2/..%2Fbad/foo/manifests/latest")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,11 +22,21 @@ type Server struct {
 	// "GET /v2/".
 	Token string
 
+	// Auth configures the built-in username/password account system (always on)
+	// and per-model visibility. A nil value uses defaults (open registration).
+	Auth *AuthConfig
+
+	auth      *authState
 	dashboard *dashboard
 }
 
 // NewServer wires a new HTTP handler around the given store.
-func NewServer(store *Store, logger *slog.Logger, token string) *Server {
+//
+// The built-in account system is always enabled: anonymous callers may browse
+// and pull public models, but pushing requires a logged-in account whose
+// username matches the target namespace. auth may be nil for defaults (open
+// registration); pass a non-nil AuthConfig to disable signup or harden cookies.
+func NewServer(store *Store, logger *slog.Logger, token string, auth *AuthConfig) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -37,7 +47,17 @@ func NewServer(store *Store, logger *slog.Logger, token string) *Server {
 		// blocking OCI traffic.
 		logger.Error("dashboard init failed; UI disabled", "err", err)
 	}
-	return &Server{Store: store, Logger: logger, Token: token, dashboard: dash}
+	if auth == nil {
+		auth = &AuthConfig{}
+	}
+	return &Server{
+		Store:     store,
+		Logger:    logger,
+		Token:     token,
+		Auth:      auth,
+		auth:      newAuthState(),
+		dashboard: dash,
+	}
 }
 
 // regError mirrors the OCI Distribution Spec error format.
@@ -74,6 +94,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/favicon.ico":
 		// 204 keeps browsers from spamming the registry log.
 		w.WriteHeader(http.StatusNoContent)
+		return
+	case path == "/auth/login":
+		s.handleLogin(w, r)
+		return
+	case path == "/auth/register":
+		s.handleRegister(w, r)
+		return
+	case path == "/auth/logout":
+		s.handleLogout(w, r)
+		return
+	case strings.HasPrefix(path, "/api/account"):
+		s.handleAccountAPI(w, r)
 		return
 	case path == "/" || path == "":
 		s.routeDashboard(w, r)
@@ -282,6 +314,14 @@ func (s *Server) handleStartUpload(w http.ResponseWriter, r *http.Request, names
 		return
 	}
 
+	// Push gate: blob uploads only make sense as part of a push, so require
+	// namespace ownership up front when auth is enabled.
+	if !s.canWrite(r, namespace) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="registry"`)
+		writeError(w, http.StatusForbidden, "DENIED", "you do not own this namespace")
+		return
+	}
+
 	repo := namespace + "/" + modelName
 	q := r.URL.Query()
 
@@ -423,6 +463,14 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request, namespac
 
 	switch r.Method {
 	case http.MethodHead, http.MethodGet:
+		// Visibility gate: a private model is invisible to anyone but its owner.
+		// We return MANIFEST_UNKNOWN (404) rather than 403 so a private model is
+		// indistinguishable from a nonexistent one — callers can't probe for the
+		// existence of someone else's private models.
+		if !s.canView(r, namespace, modelName) {
+			writeError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest not found")
+			return
+		}
 		data, err := s.Store.LoadManifest(namespace, modelName, tag)
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest not found")
@@ -441,6 +489,12 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request, namespac
 		w.WriteHeader(http.StatusOK)
 		w.Write(data)
 	case http.MethodPut:
+		// Push gate: when auth is enabled, only the namespace owner may write.
+		if !s.canWrite(r, namespace) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="registry"`)
+			writeError(w, http.StatusForbidden, "DENIED", "you do not own this namespace")
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "MANIFEST_INVALID", err.Error())
