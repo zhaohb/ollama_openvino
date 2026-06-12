@@ -173,6 +173,8 @@ This is unrelated to `OLLAMA_REGISTRY`; you need both. For production, put TLS i
 | `--addr` | Listen address; default `:5000` |
 | `--root` | Storage root (required); see layout below |
 | `--token` / `OLLAMA_REGISTRY_TOKEN` | Optional **global admin token**. If set, every request except `GET /v2/` needs `Authorization: Bearer <token>`, and that token has full read/write across all namespaces (operators / CI). |
+| `--admin-users` / `OLLAMA_REGISTRY_ADMIN_USERS` | Comma-separated account names granted access to the `/admin` user-management console. The built-in `admin` account is always an admin. |
+| `--admin-password` / `OLLAMA_REGISTRY_ADMIN_PASSWORD` | Initial password for the built-in `admin` account, overriding the default `supp0rt`. Applies only on first run (before `admin` sets its own password) and does **not** force a change. See [Accounts](#accounts--per-model-visibility). |
 | `--disable-signup` | Disable open registration. Existing accounts can still log in; new ones must be created out of band. |
 | `--cookie-secure` | Mark the session cookie `Secure` (HTTPS deployments) |
 
@@ -231,6 +233,40 @@ $env:OLLAMA_REGISTRY_TOKEN = "<personal token>"
 ollama pull --insecure 127.0.0.1:5000/alice/secret-model:v1
 ```
 
+### Administration
+
+A built-in superuser **`admin`** is created on first run so a fresh registry is
+manageable out of the box:
+
+- Default password **`supp0rt`**, which **forces a password change on first
+  login** (you're redirected to `/auth/password` until you set a new one).
+- Override the initial password with `--admin-password <pw>` (or
+  `OLLAMA_REGISTRY_ADMIN_PASSWORD`). An operator-supplied password is treated as
+  the real password — **no forced change** — and is applied **only on first
+  run**; once `admin` (or anyone) has set their own password, the flag is a
+  no-op and never silently resets it.
+- `admin` is always an admin. Grant the console to additional accounts with
+  `--admin-users alice,bob`.
+
+Admins get a **user-management console at `/admin`** (linked in the header for
+admins only; non-admins get `404`):
+
+- Lists every account with its model count and role.
+- **Delete a user** with a choice of *account only* (keep their models) or
+  *account + all their models*. Deleting also revokes that user's personal
+  tokens. Configured admin accounts are protected and can't be deleted here.
+
+```powershell
+# Start with your own admin password instead of the default:
+.\ollama-registry.exe serve --addr :5000 --root C:\ollama-registry --admin-password "S3cret!"
+
+# Add extra admins:
+.\ollama-registry.exe serve --addr :5000 --root C:\ollama-registry --admin-users alice,bob
+```
+
+> Security: `supp0rt` is a well-known default — set `--admin-password`, or sign
+> in and change it immediately, before exposing the registry.
+
 ### Self-service API
 
 These endpoints require a logged-in session and act only on the caller's own
@@ -242,9 +278,17 @@ namespace:
 | `POST /api/account/token/revoke` | Revoke all of your personal tokens |
 | `POST /api/account/visibility/<model>` | Set your model public/private (`public=true|false`) |
 
-Accounts, visibility, and tokens are stored as small JSON files under the root
-(`auth/users.json`, `auth/visibility.json`, `auth/tokens.json`). Passwords are
-bcrypt-hashed; personal tokens are stored only as sha256 hashes.
+Admin-only (admin session or global admin token):
+
+| Endpoint | Effect |
+|----------|--------|
+| `GET /admin` | User-management console |
+| `POST /admin/users/delete` | Delete a user (`username`, `with_models=true|false`) |
+
+Accounts, visibility, tokens, and the forced-password-change flag are stored as
+small JSON files under the root (`auth/users.json`, `auth/visibility.json`,
+`auth/tokens.json`, `auth/pwreset.json`). Passwords are bcrypt-hashed; personal
+tokens are stored only as sha256 hashes.
 
 ---
 
@@ -280,6 +324,7 @@ When using a reverse proxy, forward `X-Forwarded-Host` and `X-Forwarded-Proto` s
   auth/users.json                      # username -> bcrypt password hash
   auth/visibility.json                 # "<ns>/<model>" -> "public" (absent = private)
   auth/tokens.json                     # sha256(personal token) -> username
+  auth/pwreset.json                    # usernames still required to change their password
 ```
 
 See `store.go` / `visibility.go` for persistence; `auth.go` for accounts and

@@ -93,6 +93,11 @@ func NewStore(root string) (*Store, error) {
 	// shouldn't take down the whole registry, and the OCI handler will return
 	// an explicit error if a specific manifest can't later be loaded.
 	_, _ = s.migrateManifests()
+	// Seed the built-in admin account on first run so a fresh registry is
+	// manageable out of the box (default password, forced change on first login).
+	if err := s.ensureDefaultAdmin(); err != nil {
+		return nil, fmt.Errorf("seed default admin: %w", err)
+	}
 	return s, nil
 }
 

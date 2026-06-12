@@ -104,63 +104,18 @@ func TestVisibilityHidesPrivateModelOnOCIPull(t *testing.T) {
 	}
 }
 
-func TestPersonalTokenAllowsPrivatePull(t *testing.T) {
-	ts, srv, store := newAuthServer(t)
-	alice := loginAs(t, srv, ts.URL, "alice")
-	seedModelAs(t, alice, ts.URL, "alice", "tok-model", "v1")
+func TestPushIsOpen(t *testing.T) {
+	ts, _, _ := newAuthServer(t)
 
-	token, err := store.CreateToken("alice")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req, _ := http.NewRequest("GET", ts.URL+"/v2/alice/tok-model/manifests/v1", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("private pull with personal token = %d, want 200", resp.StatusCode)
-	}
-
-	// A bogus token must not work.
-	req, _ = http.NewRequest("GET", ts.URL+"/v2/alice/tok-model/manifests/v1", nil)
-	req.Header.Set("Authorization", "Bearer not-a-real-token")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("private pull with bogus token = %d, want 404", resp.StatusCode)
-	}
-}
-
-func TestPushRequiresNamespaceOwnership(t *testing.T) {
-	ts, srv, _ := newAuthServer(t)
-
-	// bob tries to start an upload in alice's namespace → 403.
-	bob := loginAs(t, srv, ts.URL, "bob")
-	resp, err := bob.Post(ts.URL+"/v2/alice/foo/blobs/uploads/", "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("bob upload into alice/* = %d, want 403", resp.StatusCode)
-	}
-
-	// alice into her own namespace → accepted.
-	alice := loginAs(t, srv, ts.URL, "alice")
-	resp, err = alice.Post(ts.URL+"/v2/alice/foo/blobs/uploads/", "", nil)
+	// Anyone (even anonymous) can push — push is open, only pull visibility is
+	// controlled by the account system.
+	resp, err := http.Post(ts.URL+"/v2/alice/foo/blobs/uploads/", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("alice upload into alice/* = %d, want 202", resp.StatusCode)
+		t.Fatalf("anonymous upload = %d, want 202 (push is open)", resp.StatusCode)
 	}
 }
 
@@ -243,18 +198,6 @@ func TestRegisterLoginFlow(t *testing.T) {
 	}
 }
 
-func TestAnonymousCannotPush(t *testing.T) {
-	ts, _, _ := newAuthServer(t)
-	// No session, no token: starting an upload must be rejected.
-	resp, err := http.Post(ts.URL+"/v2/alice/foo/blobs/uploads/", "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("anonymous push = %d, want 403", resp.StatusCode)
-	}
-}
 
 // ---- helpers ---------------------------------------------------------------
 

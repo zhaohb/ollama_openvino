@@ -48,6 +48,8 @@ func newDashboard() (*dashboard, error) {
 		"model":     "templates/layout.html,templates/model.html",
 		"tag":       "templates/layout.html,templates/tag.html",
 		"auth":      "templates/layout.html,templates/auth.html",
+		"admin":     "templates/layout.html,templates/admin.html",
+		"password":  "templates/layout.html,templates/password.html",
 	}
 	out := &dashboard{pages: make(map[string]*template.Template, len(pages))}
 	for name, files := range pages {
@@ -64,10 +66,11 @@ func newDashboard() (*dashboard, error) {
 // pageBase is the shared context every template expects (layout uses it for
 // footer + brand and child templates may use it for absolute pull commands).
 type pageBase struct {
-	Host       string
-	Generated  string
-	Login      string // logged-in user ("" if anonymous)
-	CanSignup  bool   // open registration available (controls the Register link)
+	Host      string
+	Generated string
+	Login     string // logged-in user ("" if anonymous)
+	CanSignup bool   // open registration available (controls the Register link)
+	IsAdmin   bool   // viewer may access the admin console (controls the Admin link)
 }
 
 func (s *Server) basePage(r *http.Request) pageBase {
@@ -84,6 +87,7 @@ func (s *Server) basePage(r *http.Request) pageBase {
 		Generated: time.Now().Format("2006-01-02 15:04:05 MST"),
 		Login:     login,
 		CanSignup: !s.Auth.DisableSignup,
+		IsAdmin:   s.isAdmin(r),
 	}
 }
 
@@ -141,16 +145,18 @@ type modelCard struct {
 func (s *Server) renderNamespace(w http.ResponseWriter, r *http.Request, namespace string) {
 	login, _ := s.currentUser(r)
 	models, err := s.collectNamespace(namespace, login)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			http.Error(w, "namespace not found", http.StatusNotFound)
-			return
-		}
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		// ErrNotFound just means the namespace has no manifests directory yet
+		// (e.g. a freshly registered user who hasn't pushed anything). That is
+		// not a hard error: fall through with an empty model list so the owner
+		// still lands on their (empty) namespace page. Other errors are real.
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// A namespace with nothing visible to this viewer is reported as not found,
-	// so private namespaces don't leak via an empty page.
+	// so private/empty namespaces don't leak to others via an empty page. The
+	// owner viewing its own namespace (login == namespace) always sees its page,
+	// even when empty — that's the freshly-registered-user landing case.
 	if len(models) == 0 && login != namespace {
 		http.Error(w, "namespace not found", http.StatusNotFound)
 		return
@@ -272,6 +278,24 @@ func (s *Server) renderAuthForm(w http.ResponseWriter, r *http.Request, mode, er
 		pageBase: s.basePage(r),
 		Mode:     mode,
 		Error:    errMsg,
+	})
+}
+
+// pwData feeds the change-password page.
+type pwData struct {
+	pageBase
+	MustChange bool   // arrived here via a forced password change
+	Error      string
+}
+
+func (s *Server) renderPasswordForm(w http.ResponseWriter, r *http.Request, login, errMsg string) {
+	if errMsg != "" && r.Method == http.MethodPost {
+		w.WriteHeader(http.StatusBadRequest)
+	}
+	s.renderTemplate(w, "password", pwData{
+		pageBase:   s.basePage(r),
+		MustChange: s.Store.MustChangePassword(login),
+		Error:      errMsg,
 	})
 }
 

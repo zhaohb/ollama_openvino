@@ -27,15 +27,63 @@ var ErrUserExists = errors.New("user already exists")
 // only as sha256 hashes, never in plaintext.
 
 var (
-	visMu   sync.Mutex
-	tokenMu sync.Mutex
-	userMu  sync.Mutex
+	visMu  sync.Mutex
+	userMu sync.Mutex
 )
 
-func (s *Store) authDir() string  { return filepath.Join(s.Root, "auth") }
-func (s *Store) visPath() string  { return filepath.Join(s.authDir(), "visibility.json") }
-func (s *Store) tokPath() string  { return filepath.Join(s.authDir(), "tokens.json") }
-func (s *Store) userPath() string { return filepath.Join(s.authDir(), "users.json") }
+func (s *Store) authDir() string    { return filepath.Join(s.Root, "auth") }
+func (s *Store) visPath() string    { return filepath.Join(s.authDir(), "visibility.json") }
+func (s *Store) userPath() string   { return filepath.Join(s.authDir(), "users.json") }
+func (s *Store) pwflagPath() string { return filepath.Join(s.authDir(), "pwreset.json") }
+
+// DefaultAdminUser / DefaultAdminPassword seed a built-in superuser on first
+// run so a fresh registry is manageable out of the box. The account is flagged
+// "must change password" until the user picks a new one (see MustChangePassword).
+const (
+	DefaultAdminUser     = "admin"
+	DefaultAdminPassword = "supp0rt"
+)
+
+// ensureDefaultAdmin creates the built-in admin account on first run. It is a
+// no-op if the account already exists. The seeded account is flagged so the
+// user is forced to change the well-known default password after first login.
+func (s *Store) ensureDefaultAdmin() error {
+	if s.UserExists(DefaultAdminUser) {
+		return nil
+	}
+	if err := s.CreateUser(DefaultAdminUser, DefaultAdminPassword); err != nil {
+		return err
+	}
+	return s.setMustChangePassword(DefaultAdminUser, true)
+}
+
+// ConfigureAdminPassword overrides the built-in admin's initial password (e.g.
+// from a --admin-password flag). It only takes effect while the admin is still
+// using a forced/default password (MustChangePassword == true): once the admin
+// has set their own password through the UI, this is a no-op so an operator's
+// flag can't silently reset a password the admin deliberately chose.
+//
+// Whether the operator-supplied password should still force a change on first
+// login is controlled by forceChange: pass false to treat the flag value as the
+// real password (no forced change), true to keep the "must change" prompt.
+func (s *Store) ConfigureAdminPassword(password string, forceChange bool) error {
+	if password == "" {
+		return nil
+	}
+	if !s.MustChangePassword(DefaultAdminUser) {
+		// The admin already chose their own password; don't override it.
+		return nil
+	}
+	if err := s.SetPassword(DefaultAdminUser, password); err != nil {
+		return err
+	}
+	// SetPassword clears the flag; re-arm it if the operator still wants a
+	// forced change on first login.
+	if forceChange {
+		return s.setMustChangePassword(DefaultAdminUser, true)
+	}
+	return nil
+}
 
 func repoKey(namespace, model string) string { return namespace + "/" + model }
 
@@ -130,79 +178,6 @@ func (s *Store) PublicModels() (map[string]bool, error) {
 
 // ---- personal access tokens ------------------------------------------------
 
-// CreateToken issues a new personal access token for login, persists only its
-// hash, and returns the plaintext token exactly once (the caller must show it
-// to the user immediately; it cannot be recovered later).
-func (s *Store) CreateToken(login string) (string, error) {
-	plain, err := randToken()
-	if err != nil {
-		return "", err
-	}
-	tokenMu.Lock()
-	defer tokenMu.Unlock()
-	m, err := loadJSONMap(s.tokPath())
-	if err != nil {
-		return "", err
-	}
-	m[hashToken(plain)] = login
-	if err := writeJSONMap(s.tokPath(), m); err != nil {
-		return "", err
-	}
-	return plain, nil
-}
-
-// UserForToken resolves the login that owns a personal access token, by hash.
-func (s *Store) UserForToken(token string) (string, bool) {
-	tokenMu.Lock()
-	defer tokenMu.Unlock()
-	m, err := loadJSONMap(s.tokPath())
-	if err != nil {
-		return "", false
-	}
-	login, ok := m[hashToken(token)]
-	return login, ok
-}
-
-// RevokeTokensFor deletes all personal tokens owned by login. Returns the count
-// removed.
-func (s *Store) RevokeTokensFor(login string) (int, error) {
-	tokenMu.Lock()
-	defer tokenMu.Unlock()
-	m, err := loadJSONMap(s.tokPath())
-	if err != nil {
-		return 0, err
-	}
-	removed := 0
-	for h, owner := range m {
-		if owner == login {
-			delete(m, h)
-			removed++
-		}
-	}
-	if removed == 0 {
-		return 0, nil
-	}
-	return removed, writeJSONMap(s.tokPath(), m)
-}
-
-// TokenCountFor returns how many personal tokens login currently has, so the
-// dashboard can show whether a token already exists.
-func (s *Store) TokenCountFor(login string) (int, error) {
-	tokenMu.Lock()
-	defer tokenMu.Unlock()
-	m, err := loadJSONMap(s.tokPath())
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, owner := range m {
-		if owner == login {
-			n++
-		}
-	}
-	return n, nil
-}
-
 // ---- user accounts ---------------------------------------------------------
 
 // CreateUser registers a new account. The password is stored only as a bcrypt
@@ -262,6 +237,154 @@ func (s *Store) UserExists(login string) bool {
 	}
 	_, ok := m[login]
 	return ok
+}
+
+// SetPassword changes login's password (bcrypt) and clears any "must change
+// password" flag. Returns ErrNotFound if the account doesn't exist.
+func (s *Store) SetPassword(login, password string) error {
+	login = strings.ToLower(strings.TrimSpace(login))
+	userMu.Lock()
+	m, err := loadJSONMap(s.userPath())
+	if err != nil {
+		userMu.Unlock()
+		return err
+	}
+	if _, ok := m[login]; !ok {
+		userMu.Unlock()
+		return ErrNotFound
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		userMu.Unlock()
+		return err
+	}
+	m[login] = string(hash)
+	err = writeJSONMap(s.userPath(), m)
+	userMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.setMustChangePassword(login, false)
+}
+
+// MustChangePassword reports whether login is still using a forced/default
+// password and must change it before doing anything else.
+func (s *Store) MustChangePassword(login string) bool {
+	login = strings.ToLower(strings.TrimSpace(login))
+	userMu.Lock()
+	defer userMu.Unlock()
+	m, err := loadJSONMap(s.pwflagPath())
+	if err != nil {
+		return false
+	}
+	return m[login] == "1"
+}
+
+// setMustChangePassword sets or clears the forced-password-change flag.
+func (s *Store) setMustChangePassword(login string, must bool) error {
+	login = strings.ToLower(strings.TrimSpace(login))
+	userMu.Lock()
+	defer userMu.Unlock()
+	m, err := loadJSONMap(s.pwflagPath())
+	if err != nil {
+		return err
+	}
+	if must {
+		m[login] = "1"
+	} else {
+		delete(m, login)
+	}
+	return writeJSONMap(s.pwflagPath(), m)
+}
+
+// ListUsers returns all registered account names, sorted.
+func (s *Store) ListUsers() ([]string, error) {
+	userMu.Lock()
+	defer userMu.Unlock()
+	m, err := loadJSONMap(s.userPath())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(m))
+	for login := range m {
+		out = append(out, login)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// DeleteUser removes an account and all of its personal access tokens. It does
+// NOT touch the user's models; pass withModels=true (or call
+// DeleteNamespaceModels separately) to also drop them. Returns ErrNotFound if
+// no such account exists.
+//
+// Visibility entries for the user's models are removed only when withModels is
+// true (so a "delete account, keep models" still leaves public models public).
+func (s *Store) DeleteUser(login string, withModels bool) error {
+	login = strings.ToLower(strings.TrimSpace(login))
+
+	userMu.Lock()
+	users, err := loadJSONMap(s.userPath())
+	if err != nil {
+		userMu.Unlock()
+		return err
+	}
+	if _, ok := users[login]; !ok {
+		userMu.Unlock()
+		return ErrNotFound
+	}
+	delete(users, login)
+	if err := writeJSONMap(s.userPath(), users); err != nil {
+		userMu.Unlock()
+		return err
+	}
+	userMu.Unlock()
+
+	// Clear any forced-password-change flag so a re-registered same name starts
+	// clean.
+	if err := s.setMustChangePassword(login, false); err != nil {
+		return err
+	}
+
+	if withModels {
+		if err := s.DeleteNamespaceModels(login); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteNamespaceModels removes every manifest under a namespace and clears that
+// namespace's visibility entries. Blobs are content-addressed and shared, so
+// they are intentionally left in place (a later GC pass can prune unreferenced
+// blobs). A missing namespace directory is not an error.
+func (s *Store) DeleteNamespaceModels(namespace string) error {
+	if err := ValidateName(namespace, "x", "x"); err != nil {
+		return err
+	}
+	nsDir := filepath.Join(s.Root, "manifests", namespace)
+	if err := os.RemoveAll(nsDir); err != nil {
+		return err
+	}
+	// Drop visibility entries for "<namespace>/...".
+	visMu.Lock()
+	defer visMu.Unlock()
+	m, err := loadJSONMap(s.visPath())
+	if err != nil {
+		return err
+	}
+	prefix := namespace + "/"
+	changed := false
+	for key := range m {
+		if strings.HasPrefix(key, prefix) {
+			delete(m, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return writeJSONMap(s.visPath(), m)
 }
 
 // visibleNamespaces filters a namespace list down to those the viewer may see:

@@ -2,7 +2,6 @@ package registryserver
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
 	"strings"
@@ -23,12 +22,51 @@ type AuthConfig struct {
 	// CookieSecure marks the session cookie Secure (HTTPS only). Leave false for
 	// plain-http local use.
 	CookieSecure bool
+
+	// AdminUsers is the set of account names allowed into the admin console
+	// (user management). Compared case-insensitively. Empty means no one has
+	// admin rights via the web UI.
+	AdminUsers []string
+}
+
+// isAdminUser reports whether login is an admin account. The built-in
+// superuser (DefaultAdminUser, "admin") is always an admin; additional admins
+// can be named via AdminUsers.
+func (a *AuthConfig) isAdminUser(login string) bool {
+	login = strings.ToLower(strings.TrimSpace(login))
+	if login == "" {
+		return false
+	}
+	if login == DefaultAdminUser {
+		return true
+	}
+	for _, u := range a.AdminUsers {
+		if strings.ToLower(strings.TrimSpace(u)) == login {
+			return true
+		}
+	}
+	return false
 }
 
 const (
 	sessionCookie = "registry_session"
 	sessionTTL    = 7 * 24 * time.Hour
 )
+
+// reservedUsernames are names that cannot be registered because they conflict
+// with routed URL prefixes. Case-insensitive.
+var reservedUsernames = map[string]bool{
+	"admin":   true,
+	"auth":    true,
+	"api":     true,
+	"v2":      true,
+	"favicon": true,
+	"_":       true,
+}
+
+func isReservedUsername(login string) bool {
+	return reservedUsernames[strings.ToLower(login)]
+}
 
 // session is a logged-in browser session keyed by an opaque random cookie.
 // Sessions are in-memory only: a server restart invalidates them (accounts
@@ -88,28 +126,14 @@ func (a *authState) destroy(id string) {
 	a.mu.Unlock()
 }
 
-// currentUser resolves the identity behind a request. It returns the account
-// login and true when the caller is authenticated, via (in order):
-//
-//  1. a valid session cookie (browser), or
-//  2. an "Authorization: Bearer <personal-token>" header (CLI pull/push).
-//
-// When no identity is present it returns ("", false): callers treat that as
-// "anonymous" — anonymous users may browse and pull public models only.
+// currentUser resolves the identity behind a request via a valid session cookie
+// (browser login). Returns the account login and true when the caller is
+// authenticated; ("", false) otherwise — anonymous users may browse and pull
+// public models only.
 func (s *Server) currentUser(r *http.Request) (string, bool) {
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
 		if login, ok := s.auth.lookup(c.Value); ok {
 			return login, true
-		}
-	}
-	if authz := r.Header.Get("Authorization"); strings.HasPrefix(authz, "Bearer ") {
-		tok := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
-		// The global admin token (if set) is not a user; skip it here so it does
-		// not masquerade as a namespace owner.
-		if tok != "" && tok != s.Token {
-			if login, ok := s.Store.UserForToken(tok); ok {
-				return login, true
-			}
 		}
 	}
 	return "", false
@@ -149,8 +173,45 @@ func (s *Server) isOwner(r *http.Request, namespace string) bool {
 
 // canWrite reports whether a request may push to namespace. Only the namespace
 // owner (or the global admin token) may push; anonymous pushes are rejected.
+// A user who still has a forced password change pending cannot push.
 func (s *Server) canWrite(r *http.Request, namespace string) bool {
-	return s.hasAdminToken(r) || s.isOwner(r, namespace)
+	if s.hasAdminToken(r) {
+		return true
+	}
+	login, ok := s.currentUser(r)
+	if !ok || login != namespace {
+		return false
+	}
+	if s.Store.MustChangePassword(login) {
+		return false
+	}
+	return true
+}
+
+// mustChangePasswordGate checks whether the logged-in user is blocked by a
+// forced password change. Returns true (and writes a response) if the request
+// should be aborted. Callers should return immediately when this returns true.
+func (s *Server) mustChangePasswordGate(w http.ResponseWriter, r *http.Request) bool {
+	login, ok := s.currentUser(r)
+	if !ok {
+		return false // no session = will fail auth elsewhere
+	}
+	if !s.Store.MustChangePassword(login) {
+		return false
+	}
+	writeError(w, http.StatusForbidden, "PASSWORD_CHANGE_REQUIRED",
+		"you must change your password before performing this action")
+	return true
+}
+
+// isAdmin reports whether a request is allowed into the admin console: either it
+// carries the global admin token, or it is a session of a configured admin user.
+func (s *Server) isAdmin(r *http.Request) bool {
+	if s.hasAdminToken(r) {
+		return true
+	}
+	login, ok := s.currentUser(r)
+	return ok && s.Auth.isAdminUser(login)
 }
 
 // ---- login / register / logout --------------------------------------------
@@ -175,6 +236,11 @@ func (s *Server) startSession(w http.ResponseWriter, login string) error {
 
 // handleLogin serves the login form (GET) and processes credentials (POST).
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Already logged in → go to your namespace instead of showing the form again.
+	if login, ok := s.currentUser(r); ok && r.Method == http.MethodGet {
+		http.Redirect(w, r, "/"+login, http.StatusFound)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.renderAuthForm(w, r, "login", "")
@@ -192,6 +258,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			s.renderAuthForm(w, r, "login", "internal error")
 			return
 		}
+		if s.Store.MustChangePassword(login) {
+			http.Redirect(w, r, "/auth/password", http.StatusFound)
+			return
+		}
 		http.Redirect(w, r, "/"+login, http.StatusFound)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -205,6 +275,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "registration is disabled", http.StatusForbidden)
 		return
 	}
+	// Already logged in → go to your namespace.
+	if login, ok := s.currentUser(r); ok && r.Method == http.MethodGet {
+		http.Redirect(w, r, "/"+login, http.StatusFound)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.renderAuthForm(w, r, "register", "")
@@ -215,6 +290,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// any path segment.
 		if err := ValidateName(login, "x", "x"); err != nil {
 			s.renderAuthForm(w, r, "register", "username may only contain letters, digits, _, . and -")
+			return
+		}
+		if isReservedUsername(login) {
+			s.renderAuthForm(w, r, "register", "that username is reserved and cannot be registered")
 			return
 		}
 		if len(password) < 8 {
@@ -240,6 +319,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
 		s.auth.destroy(c.Value)
 	}
@@ -247,9 +330,51 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-// hashToken returns the storage form of a personal access token. We never store
-// the plaintext: only its sha256, so a leaked token file can't be used to pull.
-func hashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+// handleChangePassword serves the change-password form (GET) and applies it
+// (POST). Requires a logged-in session; it's the destination users are forced
+// to when their account still uses a default/forced password.
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	login, ok := s.currentUser(r)
+	if !ok {
+		http.Redirect(w, r, "/auth/login", http.StatusFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.renderPasswordForm(w, r, login, "")
+	case http.MethodPost:
+		current := r.FormValue("current_password")
+		next := r.FormValue("new_password")
+		confirm := r.FormValue("confirm_password")
+
+		// Verify the current password (defends against a hijacked-but-idle
+		// session changing the password without knowing the old one).
+		if okPw, err := s.Store.VerifyUser(login, current); err != nil {
+			s.renderPasswordForm(w, r, login, "internal error")
+			return
+		} else if !okPw {
+			s.renderPasswordForm(w, r, login, "current password is incorrect")
+			return
+		}
+		if len(next) < 8 {
+			s.renderPasswordForm(w, r, login, "new password must be at least 8 characters")
+			return
+		}
+		if next != confirm {
+			s.renderPasswordForm(w, r, login, "new passwords do not match")
+			return
+		}
+		if next == current {
+			s.renderPasswordForm(w, r, login, "new password must differ from the current one")
+			return
+		}
+		if err := s.Store.SetPassword(login, next); err != nil {
+			s.renderPasswordForm(w, r, login, "internal error")
+			return
+		}
+		http.Redirect(w, r, "/"+login, http.StatusFound)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
+

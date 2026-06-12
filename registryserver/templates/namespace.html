@@ -4,56 +4,6 @@
 <h1 class="title">{{.Namespace}}</h1>
 <div class="subtitle">{{len .Models}} model{{if ne (len .Models) 1}}s{{end}} published to <code class="mono">{{.Host}}/{{.Namespace}}</code></div>
 
-{{if .IsOwner}}
-<section class="box">
-  <h3>Personal access token</h3>
-  <p class="subtitle" style="margin-top:0">
-    Models you push are <strong>private by default</strong>. To pull a private
-    model from the CLI, generate a token and pass it as a Bearer header:
-  </p>
-  <pre class="command">OLLAMA_REGISTRY_TOKEN=&lt;token&gt; ollama pull --insecure {{.Host}}/{{.Namespace}}/&lt;model&gt;:&lt;tag&gt;</pre>
-  <button id="tokBtn" type="button"
-          style="padding:8px 14px;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg);cursor:pointer">
-    Generate token
-  </button>
-  <button id="tokRevoke" type="button"
-          style="padding:8px 14px;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg);cursor:pointer;margin-left:8px">
-    Revoke all tokens
-  </button>
-  <span id="tokMsg" class="subtitle" style="margin-left:10px"></span>
-  <pre id="tokOut" class="command" style="display:none;margin-top:12px"></pre>
-</section>
-<script>
-(function () {
-  var gen = document.getElementById("tokBtn");
-  var rev = document.getElementById("tokRevoke");
-  var out = document.getElementById("tokOut");
-  var msg = document.getElementById("tokMsg");
-  if (!gen) return;
-  gen.addEventListener("click", function () {
-    gen.disabled = true; msg.textContent = "";
-    fetch("/api/account/token", {method: "POST"})
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(function (d) {
-        out.style.display = "block";
-        out.textContent = d.token + "\n\n(copy this now — it cannot be shown again)";
-      })
-      .catch(function (e) { msg.textContent = "Failed: " + e.message; })
-      .finally(function () { gen.disabled = false; });
-  });
-  rev.addEventListener("click", function () {
-    if (!confirm("Revoke ALL of your personal tokens? Existing CLI pulls using them will stop working.")) return;
-    rev.disabled = true;
-    fetch("/api/account/token/revoke", {method: "POST"})
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(function (d) { msg.textContent = "Revoked " + d.revoked + " token(s)."; out.style.display = "none"; })
-      .catch(function (e) { msg.textContent = "Failed: " + e.message; })
-      .finally(function () { rev.disabled = false; });
-  });
-})();
-</script>
-{{end}}
-
 {{if .Models}}
 <div class="card-list">
   {{range .Models}}
@@ -71,6 +21,22 @@
   {{end}}
 </div>
 {{else}}
-<div class="empty">No models under this namespace.</div>
+  {{if .IsOwner}}
+  <section class="box">
+    <h3>Get started</h3>
+    <p class="subtitle" style="margin-top:0">Push your first model to this namespace:</p>
+    <pre class="command"># 1. Copy a local model to your registry namespace
+ollama cp &lt;local-model&gt;:&lt;tag&gt; {{.Host}}/{{.Namespace}}/&lt;model&gt;:&lt;tag&gt;
+
+# 2. Push it to the registry
+ollama push --insecure {{.Host}}/{{.Namespace}}/&lt;model&gt;:&lt;tag&gt;</pre>
+    <p class="subtitle">Example:</p>
+    <pre class="command">ollama cp qwen3.5_4b_ov:v1 {{.Host}}/{{.Namespace}}/qwen3.5_4b_ov:v1
+ollama push --insecure {{.Host}}/{{.Namespace}}/qwen3.5_4b_ov:v1</pre>
+  </section>
+  {{else}}
+  <div class="empty">No public models under this namespace.</div>
+  {{end}}
 {{end}}
+
 {{end}}

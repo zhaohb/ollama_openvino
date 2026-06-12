@@ -158,8 +158,9 @@
     <nav>
       <a href="/">Models</a>
       {{if .Login}}
+        {{if .IsAdmin}}<a href="/admin">Admin</a>{{end}}
         <a href="/{{.Login}}">@{{.Login}}</a>
-        <a href="/auth/logout">Sign out</a>
+        <form method="POST" action="/auth/logout" style="display:inline;margin:0"><button type="submit" style="background:none;border:none;color:var(--fg-muted);font:inherit;cursor:pointer;padding:0">Sign out</button></form>
       {{else}}
         <a href="/auth/login">Sign in</a>
         {{if .CanSignup}}<a href="/auth/register">Register</a>{{end}}

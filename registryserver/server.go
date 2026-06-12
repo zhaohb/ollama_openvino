@@ -104,8 +104,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/auth/logout":
 		s.handleLogout(w, r)
 		return
+	case path == "/auth/password":
+		s.handleChangePassword(w, r)
+		return
 	case strings.HasPrefix(path, "/api/account"):
 		s.handleAccountAPI(w, r)
+		return
+	case path == "/admin" || strings.HasPrefix(path, "/admin/"):
+		s.handleAdmin(w, r)
 		return
 	case path == "/" || path == "":
 		s.routeDashboard(w, r)
@@ -314,14 +320,6 @@ func (s *Server) handleStartUpload(w http.ResponseWriter, r *http.Request, names
 		return
 	}
 
-	// Push gate: blob uploads only make sense as part of a push, so require
-	// namespace ownership up front when auth is enabled.
-	if !s.canWrite(r, namespace) {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="registry"`)
-		writeError(w, http.StatusForbidden, "DENIED", "you do not own this namespace")
-		return
-	}
-
 	repo := namespace + "/" + modelName
 	q := r.URL.Query()
 
@@ -489,12 +487,6 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request, namespac
 		w.WriteHeader(http.StatusOK)
 		w.Write(data)
 	case http.MethodPut:
-		// Push gate: when auth is enabled, only the namespace owner may write.
-		if !s.canWrite(r, namespace) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="registry"`)
-			writeError(w, http.StatusForbidden, "DENIED", "you do not own this namespace")
-			return
-		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "MANIFEST_INVALID", err.Error())
