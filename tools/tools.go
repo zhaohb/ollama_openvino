@@ -129,10 +129,13 @@ func (p *Parser) parseToolCall() *api.ToolCall {
 	}
 
 	var argsMap map[string]any
-	if found, i := findArguments(tool, p.buffer); found == nil {
+	if args, i, found := findArguments(tool, p.buffer); !found {
+		// No complete tool-call object yet — keep buffering. (A complete call
+		// with no arguments returns found==true with an empty map, so it is
+		// NOT dropped here.)
 		return nil
 	} else {
-		argsMap = found
+		argsMap = args
 		if i > end {
 			end = i
 		}
@@ -366,16 +369,19 @@ func findTool(tools []api.Tool, buf []byte) (*api.Tool, int) {
 	return nil, 0
 }
 
-// findArguments returns the first object that appears to be
-// arguments for the provided tool in the provided buffer,
-// returning nil if no arguments are found and the end position
-// TODO (jmorganca): this does not support parsing omitted arguments
-// objects for functions that have all-optional parameters
-// e.g. `{"name": "get_conditions", "arguments": {}}` will work but
-// `{"name": "get_conditions"}` will not currently work
-func findArguments(tool *api.Tool, buffer []byte) (map[string]any, int) {
+// findArguments returns the first object that appears to be arguments for the
+// provided tool in the provided buffer, along with its end position and whether
+// a complete matching tool-call object was found.
+//
+// The returned bool distinguishes the two cases the caller must handle
+// differently: a complete call that simply has no/empty arguments (e.g.
+// `{"name": "get_conditions"}` for an all-optional function) returns
+// (emptyMap, end, true), while "no complete object yet, keep buffering" returns
+// (nil, 0, false). Previously both returned a nil map, so valid no-argument
+// calls were silently dropped.
+func findArguments(tool *api.Tool, buffer []byte) (map[string]any, int, bool) {
 	if len(buffer) == 0 {
-		return nil, 0
+		return nil, 0, false
 	}
 
 	start := -1
@@ -442,6 +448,17 @@ func findArguments(tool *api.Tool, buffer []byte) (map[string]any, int) {
 						if args, ok := findMap("parameters", obj); ok {
 							return args, true
 						}
+						// Has a name but no arguments/parameters key at all → a
+						// valid call that omits arguments (all-optional function).
+						// Return an empty map so the caller treats it as complete.
+						// But if an arguments/parameters key IS present with a
+						// non-map type (e.g. an array), fall through to nil — that
+						// is malformed, not an omitted-args call.
+						_, hasArgs := obj["arguments"]
+						_, hasParams := obj["parameters"]
+						if !hasArgs && !hasParams {
+							return map[string]any{}, true
+						}
 						return nil, true
 					}
 					if args, ok := findMap(tool.Function.Name, obj); ok {
@@ -469,10 +486,14 @@ func findArguments(tool *api.Tool, buffer []byte) (map[string]any, int) {
 				}
 
 				if args, found := findObject(data); found {
-					return args, i
+					// A matching call was found. args is an empty map for a call
+					// that omits arguments (all-optional function) and nil only
+					// for malformed arguments (e.g. a non-object); either way the
+					// call object itself is complete, so report found.
+					return args, i, true
 				}
 
-				return data, i
+				return data, i, true
 			}
 
 			if braces < 0 {
@@ -481,7 +502,7 @@ func findArguments(tool *api.Tool, buffer []byte) (map[string]any, int) {
 		}
 	}
 
-	return nil, 0
+	return nil, 0, false
 }
 
 // done checks if the parser is done parsing by looking
@@ -527,4 +548,12 @@ func (p *Parser) Content() string {
 	}
 
 	return ""
+}
+
+// Buffer returns the parser's current unconsumed buffer verbatim. Unlike
+// Content(), it does not suppress a partial/unclosed tool-call tag. Callers use
+// this to flush leftover text on stream end so a tool call that was truncated
+// (e.g. hit the token limit before its closing tag) is not silently dropped.
+func (p *Parser) Buffer() string {
+	return string(p.buffer)
 }

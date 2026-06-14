@@ -314,6 +314,23 @@ Tokyo
 			},
 		},
 		{
+			// Omitted arguments object entirely (all-optional function). Must be
+			// parsed as a call with empty args, not dropped.
+			name:    "omitted args",
+			inputs:  []string{`<tool_call>{"name": "get_conditions"}</tool_call>`},
+			content: "",
+			tmpl:    qwen,
+			calls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index:     0,
+						Name:      "get_conditions",
+						Arguments: api.NewToolCallFunctionArguments(),
+					},
+				},
+			},
+		},
+		{
 			name:    "text before tool call",
 			inputs:  []string{`Let me check the weather. <tool_call>{"name": "get_temperature", "arguments": {"city": "New York"}}</tool_call>`},
 			content: "Let me check the weather. ",
@@ -1447,7 +1464,7 @@ func TestFindArguments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := findArguments(&api.Tool{Function: api.ToolFunction{Name: tt.tool}}, tt.buffer)
+			got, _, _ := findArguments(&api.Tool{Function: api.ToolFunction{Name: tt.tool}}, tt.buffer)
 
 			if diff := cmp.Diff(got, tt.want); diff != "" {
 				t.Errorf("findArguments() args mismatch (-got +want):\n%s", diff)

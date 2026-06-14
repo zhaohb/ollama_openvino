@@ -2820,6 +2820,28 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			genaiToolParser = tools.NewParserWithTag(req.Tools, "<tool_call>")
 		}
 
+		// Thinking parser for the OpenVINO path. OpenVINO models have no usable
+		// ollama Go template to infer tags from, so we use the <think></think>
+		// convention this fork already assumes for thinking models (see
+		// filterThinkTags). Without this, <think>…</think> leaks into Content,
+		// which is especially broken when combined with tool calls.
+		//
+		// Crucially, the OpenVINO pipeline renders the chat template INTERNALLY,
+		// and Qwen3-style thinking templates emit the OPENING <think> as part of
+		// the prompt — so the model only ever produces the thinking body and the
+		// closing </think>, never the opening tag. We therefore pre-seed the
+		// parser with the opening tag (mirroring the standard branch's
+		// "prompt ends with <think>" handling at routes.go ~2520), so it starts
+		// already inside the thinking state and correctly captures the body.
+		var genaiThinkingParser *thinking.Parser
+		if req.Think != nil && req.Think.Bool() {
+			genaiThinkingParser = &thinking.Parser{
+				OpeningTag: "<think>",
+				ClosingTag: "</think>",
+			}
+			genaiThinkingParser.AddContent("<think>")
+		}
+
 		ch := make(chan any)
 		go func() {
 			defer close(ch)
@@ -2853,6 +2875,19 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 				}
 
+				// Separate <think>…</think> into Message.Thinking before tool
+				// parsing, so thinking never leaks into content or is mistaken
+				// for a tool call.
+				if genaiThinkingParser != nil {
+					thinkingContent, remainingContent := genaiThinkingParser.AddContent(res.Message.Content)
+					if thinkingContent == "" && remainingContent == "" && !cr.Done {
+						// need more tokens to disambiguate the tag
+						return
+					}
+					res.Message.Thinking = thinkingContent
+					res.Message.Content = remainingContent
+				}
+
 				if genaiToolParser != nil {
 					toolCalls, content := genaiToolParser.Add(res.Message.Content)
 					if len(content) > 0 {
@@ -2863,9 +2898,19 @@ func (s *Server) ChatHandler(c *gin.Context) {
 						}
 						res.Message.ToolCalls = toolCalls
 						res.Message.Content = ""
+					} else if res.Message.Thinking != "" {
+						// thinking-only chunk: fall through to send it
 					} else {
 						if cr.Done {
-							res.Message.Content = genaiToolParser.Content()
+							// Flush any leftover content. Content() suppresses a
+							// partial/unclosed <tool_call>, so fall back to the raw
+							// buffer to avoid silently dropping a tool call that was
+							// truncated before its closing tag.
+							content := genaiToolParser.Content()
+							if content == "" {
+								content = genaiToolParser.Buffer()
+							}
+							res.Message.Content = content
 							ch <- res
 						}
 						return
@@ -2881,11 +2926,13 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		if req.Stream != nil && !*req.Stream {
 			var resp api.ChatResponse
 			var sbContent strings.Builder
+			var sbThinking strings.Builder
 			var toolCalls []api.ToolCall
 			for rr := range ch {
 				switch t := rr.(type) {
 				case api.ChatResponse:
 					sbContent.WriteString(t.Message.Content)
+					sbThinking.WriteString(t.Message.Thinking)
 					if len(t.Message.ToolCalls) > 0 {
 						toolCalls = append(toolCalls, t.Message.ToolCalls...)
 					}
@@ -2902,11 +2949,14 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					return
 				}
 			}
+			// Content and thinking are aggregated separately — thinking was
+			// already split out per chunk by genaiThinkingParser, so we must NOT
+			// overwrite Thinking with Content here.
 			resp.Message.Content = sbContent.String()
+			resp.Message.Thinking = sbThinking.String()
 			if len(toolCalls) > 0 {
-				resp.Message.Thinking = resp.Message.Content
-				resp.Message.Content = ""
 				resp.Message.ToolCalls = toolCalls
+				resp.Message.Content = ""
 				resp.DoneReason = "tool_calls"
 			}
 			c.JSON(http.StatusOK, resp)
