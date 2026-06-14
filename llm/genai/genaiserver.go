@@ -165,6 +165,23 @@ func NewGenaiServer(gpus []ml.DeviceInfo, model string, modelname string, modelt
 
 	params = append(params, "--parallel", strconv.Itoa(numParallel))
 
+	// LoRA (optional, additive): pass ALL adapter paths to the runner via --lora
+	// (comma-separated). They are registered at load in MODE_DYNAMIC so a request
+	// can switch among them by name at runtime. When no adapter is configured the
+	// flag is omitted entirely, so the existing non-LoRA load path is unchanged.
+	// Only the OpenVINO GenAI backend consumes this; the official llama path is
+	// untouched.
+	var loraPaths []string
+	for _, a := range adapters {
+		if a != "" {
+			loraPaths = append(loraPaths, a)
+		}
+	}
+	if len(loraPaths) > 0 {
+		params = append(params, "--lora", strings.Join(loraPaths, ","))
+		slog.Info("registering LoRA adapters for GenAI backend", "count", len(loraPaths), "paths", loraPaths)
+	}
+
 	for {
 		port := 0
 		if a, err := net.ResolveTCPAddr("tcp", "localhost:0"); err == nil {

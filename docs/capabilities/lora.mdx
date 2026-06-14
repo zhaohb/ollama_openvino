@@ -1,0 +1,277 @@
+---
+title: LoRA Adapters (OpenVINO)
+---
+
+The OpenVINO GenAI backend can load one or more LoRA adapters alongside a base
+model and switch between them **per request** — no model reload, no separate
+merged checkpoint. Adapters are registered once at load time and selected (by
+name, with a per-request blending weight) on each generation.
+
+<Note>
+LoRA here is specific to the **OpenVINO GenAI backend** (`ollama_openvino`). It
+applies to both the text (LLM) and vision-language (VLM) pipelines. The adapter
+affects the language model only — a VLM's vision encoder is left unchanged. The
+upstream llama.cpp backend is unaffected by anything on this page.
+</Note>
+
+## Usage
+
+There are two ways to use a LoRA adapter, depending on whether you want it baked
+into a model or supplied at run time:
+
+| Entry point | When to use | Adapter format |
+|-------------|-------------|----------------|
+| `ollama run --lora <path>` / API `lora` field | Quick, ad-hoc: point at a raw `.safetensors` for one session — **no `ollama create`** | raw `.safetensors` |
+| Modelfile `ADAPTER` | Bake adapter(s) into a named model; switch among them per request | registered at create |
+
+### `ollama run` with `--lora`
+
+Apply a raw LoRA adapter for the whole session by passing its `.safetensors`
+path. This **bypasses `ollama create` and any GGUF conversion** — the path is
+forwarded as-is to the OpenVINO GenAI runner, which loads the adapter when the
+pipeline is constructed.
+
+```shell
+ollama run my-openvino-model --lora ./style-anime.safetensors
+```
+
+```shell
+# optional: set the blending weight (default 1.0)
+ollama run my-openvino-model --lora ./style-anime.safetensors --lora-alpha 0.8
+```
+
+<Note>
+The adapter is fixed for the lifetime of the session. Re-running with a
+different `--lora` reloads the pipeline with the new adapter (the scheduler
+notices the adapter path changed). The path is resolved to an absolute path by
+the CLI, so relative paths work regardless of where the server runs.
+</Note>
+
+The `--lora` flag is only honored by the OpenVINO backend; other backends ignore
+it. On NPU it falls back to a plain (no-LoRA) load, since the NPU pipeline
+constructor does not accept adapters.
+
+### HTTP API (`/api/generate`, `/api/chat`)
+
+The same raw-adapter path can be supplied per request via the `lora` field (with
+optional `lora_alpha`). This is what `ollama run --lora` sends under the hood.
+
+<Tabs>
+  <Tab title="generate (cURL)">
+    ```shell
+    curl http://localhost:11434/api/generate -d '{
+      "model": "my-openvino-model",
+      "prompt": "Tell me a short story.",
+      "lora": "/abs/path/to/style-anime.safetensors",
+      "lora_alpha": 0.8,
+      "stream": false
+    }'
+    ```
+  </Tab>
+  <Tab title="chat (cURL)">
+    ```shell
+    curl http://localhost:11434/api/chat -d '{
+      "model": "my-openvino-model",
+      "messages": [{ "role": "user", "content": "Tell me a short story." }],
+      "lora": "/abs/path/to/style-anime.safetensors",
+      "lora_alpha": 0.8,
+      "stream": false
+    }'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import requests
+
+    requests.post("http://localhost:11434/api/generate", json={
+        "model": "my-openvino-model",
+        "prompt": "Tell me a short story.",
+        "lora": "/abs/path/to/style-anime.safetensors",
+        "lora_alpha": 0.8,
+        "stream": False,
+    })
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+`lora` must be an **absolute path** the **server** can read (the server may run
+in a different working directory than the client). The CLI handles this for you;
+direct API callers should pass an absolute path. `lora_alpha` defaults to `1.0`.
+</Note>
+
+The rest of this page covers the Modelfile route and the lower-level runner
+protocol, which additionally supports **registering several adapters** and
+**switching among them per request**.
+
+## How it works
+
+Adapters flow from the Modelfile down to the GenAI C API:
+
+```
+Modelfile  ADAPTER ./a.safetensors  ADAPTER ./b.safetensors
+   │  (each adapter becomes an image layer → model.AdapterPaths)
+   ▼
+genaiserver  --lora a.safetensors,b.safetensors        (comma-separated)
+   ▼
+genairunner  parseLoraPaths → CreatePipelineWithLora(MODE_DYNAMIC)
+   │  registers ALL adapters once; keeps handles alive in a LoraRegistry
+   ▼
+/completion  { "lora": "a" } | { "loras": [...] }       (per-request selection)
+   ▼
+SamplingParams → GenerationConfig.adapters → pipeline.generate()
+   │  AdapterController.apply() swaps adapter state tensors in place
+   ▼
+OpenVINO GenAI applies the selected adapter(s) for this generation only
+```
+
+The pipeline is constructed in **`MODE_DYNAMIC`**, which builds variable LoRA
+state tensors (`ReadValue`/`Assign`) into the model graph. Switching adapters at
+runtime rewrites those state tensors via `set_state` — it does **not** recompile
+or reload the model.
+
+### Registration vs. selection
+
+These are two distinct phases, and the distinction is the core constraint:
+
+| Phase | When | What |
+|-------|------|------|
+| **Registration** | model load | All adapters listed via `--lora` are loaded and bound to the pipeline's `AdapterController`. Fixed for the model's lifetime. |
+| **Selection** | each request | The request picks a subset (zero, one, or many) of the **already-registered** adapters, each with an alpha. Applied for that generation only. |
+
+<Warning>
+Runtime selection can only choose among adapters that were **registered at load
+time**. You cannot introduce a brand-new `.safetensors` in a request — that would
+require rebuilding the `AdapterController` (a reload). Register every adapter you
+intend to use up front.
+</Warning>
+
+## Registering adapters
+
+List one or more `ADAPTER` directives in the Modelfile. Each points to a LoRA in
+`.safetensors` format. The adapter's **name** for request-time selection is the
+file's base name without extension (e.g. `style-anime.safetensors` → `style-anime`).
+
+```dockerfile
+FROM your-openvino-model
+
+ADAPTER ./style-anime.safetensors
+ADAPTER ./domain-legal.safetensors
+```
+
+```shell
+ollama create my-model -f Modelfile
+```
+
+At load you'll see the registered set in the runner log:
+
+```
+LLM pipeline loaded with 2 LoRA adapter(s) (MODE_DYNAMIC): [style-anime domain-legal]
+```
+
+<Note>
+When no `ADAPTER` is present, the `--lora` flag is omitted entirely and the
+pipeline loads through the unchanged non-LoRA path — there is zero overhead and
+no behavioral change for models that don't use LoRA.
+</Note>
+
+## Selecting adapters per request
+
+<Note>
+This section describes the **lower-level runner `/completion` protocol**, where
+adapters are selected by **registered name** (the adapter's base filename
+without extension) among those registered at load. This differs from the public
+`/api/generate` · `/api/chat` `lora` field above, which takes a **raw
+`.safetensors` path** for the session. Use this when you've registered several
+adapters (via Modelfile `ADAPTER` or `--lora a,b,c`) and want to switch among
+them per request.
+</Note>
+
+The runner's `/completion` endpoint accepts two equivalent selection forms. Use
+whichever fits; if both are present, `loras` (the multi form) wins.
+
+### Single adapter
+
+```json
+{
+  "prompt": "...",
+  "lora": "style-anime",
+  "lora_alpha": 0.8
+}
+```
+
+### Multiple adapters (stacked)
+
+Stack several registered adapters in one request, each with its own weight. Their
+LoRA deltas are summed by GenAI.
+
+```json
+{
+  "prompt": "...",
+  "loras": [
+    { "name": "style-anime",  "alpha": 0.7 },
+    { "name": "domain-legal", "alpha": 0.5 }
+  ]
+}
+```
+
+### Disabling LoRA for a request
+
+An empty selection cleanly runs the base model for that generation, even when
+adapters are registered:
+
+```json
+{ "prompt": "...", "lora": "" }
+```
+
+```json
+{ "prompt": "...", "loras": [] }
+```
+
+## Alpha (blending weight)
+
+`alpha` scales an adapter's contribution and is fully dynamic — it is read from
+the request and applied at generation time, so the same loaded model can serve
+different strengths back to back without reloading.
+
+- Defaults to `1.0` when omitted or `0`.
+- In the stacked form, each adapter carries its own alpha.
+- Changing only alpha (same adapter set) takes the fast `set_new_adapter_alphas`
+  path internally; changing the adapter set swaps the full tensors.
+
+## Behavior & limits
+
+<Note>
+**Stacking restriction.** Multiple ordinary LoRA adapters stack freely. Adapters
+that carry *constant* tensors cannot be combined with others (a GenAI
+restriction) and must be used one at a time.
+</Note>
+
+- **Unknown name** — a selected name that wasn't registered is skipped with a
+  warning; generation proceeds with the remaining valid adapters (or the base
+  model if none resolve). It never aborts the request.
+- **NPU** — the NPU pipeline constructor does not accept adapters, so a model
+  with `ADAPTER` directives falls back to a plain (no-LoRA) load on NPU, with a
+  warning. CPU and GPU support dynamic LoRA.
+- **Load failure** — if adapter registration fails, the pipeline falls back to a
+  plain load rather than failing the model, and logs the status.
+- **Thread-safety** — selection is applied inside the single-threaded generate
+  path (one in-flight generation per pipeline), so concurrent requests serialize
+  there as usual; each picks up its own adapter selection.
+
+## Implementation notes
+
+The support spans the GenAI C API and the `ollama_openvino` Go/cgo layer:
+
+| Layer | Symbol / file | Role |
+|-------|---------------|------|
+| GenAI C API | `ov_genai_adapter_create`, `ov_genai_adapter_config_*`, `ov_genai_llm_pipeline_create_with_adapters`, `ov_genai_vlm_pipeline_create_with_adapters`, `ov_genai_generation_config_set_adapters` | C wrappers over `ov::genai::Adapter` / `AdapterConfig` / the `ov::genai::adapters` property |
+| cgo wrappers | `genai/common/genai.go` | `*_create_dynamic_cgo` (register all in `MODE_DYNAMIC`), `genconfig_set_adapters_multi` (per-request stack) |
+| Go API | `CreatePipelineWithLora`, `CreateVlmPipelineWithLora`, `LoraRegistry`, `SamplingParams.LoraSpecs` | Keeps adapter handles alive for the pipeline's lifetime; resolves names → handles per request |
+| Runner | `genai/runner`, `genai/vlmrunner` | `--lora` flag (load) + `lora` / `loras` request fields (selection) |
+| Server | `llm/genai/genaiserver.go` | Forwards `model.AdapterPaths` → `--lora` |
+
+The adapter handles in `LoraRegistry` are **not** freed after construction — the
+`AdapterController` identifies adapters by object identity at `apply()` time, so
+the handles must outlive the pipeline. They are released by `LoraRegistry.Free()`
+after the pipeline is freed.

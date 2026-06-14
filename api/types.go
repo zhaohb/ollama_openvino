@@ -70,6 +70,15 @@ type GenerateRequest struct {
 
 	InferDevice string `json:"inferdevice"`
 
+	// Lora is the path to a raw LoRA adapter (.safetensors) applied for this
+	// session on the OpenVINO GenAI backend. It bypasses `ollama create` /
+	// GGUF conversion: the path is forwarded as-is to the runner, which loads
+	// the adapter at pipeline construction. Ignored by other backends.
+	Lora string `json:"lora,omitempty"`
+
+	// LoraAlpha is the blending weight for Lora (defaults to 1.0).
+	LoraAlpha float32 `json:"lora_alpha,omitempty"`
+
 	// Prompt is the textual prompt to send to the model.
 	Prompt string `json:"prompt"`
 
@@ -177,6 +186,13 @@ type ChatRequest struct {
 	// responding. Can be a boolean (true/false) or a string ("high", "medium", "low")
 	// for supported models.
 	Think *ThinkValue `json:"think,omitempty"`
+
+	// Lora is the path to a raw LoRA adapter (.safetensors) applied for this
+	// session on the OpenVINO GenAI backend (bypasses create/GGUF conversion).
+	Lora string `json:"lora,omitempty"`
+
+	// LoraAlpha is the blending weight for Lora (defaults to 1.0).
+	LoraAlpha float32 `json:"lora_alpha,omitempty"`
 
 	// Truncate is a boolean that, when set to true, truncates the chat history messages
 	// if the rendered prompt exceeds the context length limit.

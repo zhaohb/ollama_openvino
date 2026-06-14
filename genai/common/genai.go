@@ -17,6 +17,7 @@ package common
 #include "openvino/genai/c/visibility.h"
 #include "openvino/genai/c/chat_history.h"
 #include "openvino/genai/c/json_container.h"
+#include "openvino/genai/c/lora_adapter.h"
 
 #include "openvino/c/openvino.h"
 #include "openvino/c/ov_common.h"
@@ -47,6 +48,127 @@ static ov_status_e ov_genai_vlm_pipeline_create_cgo(const char* models_path,
 																  const char* device,
                                                                   ov_genai_vlm_pipeline** pipe) {
 	return 	ov_genai_vlm_pipeline_create(models_path, device, 0, pipe);
+}
+
+// ─── LoRA wrappers ──────────────────────────────────────────────────────────
+// Dynamic LoRA support. Design (matches OpenVINO GenAI's hard constraint that
+// runtime switching only works among adapters registered at construction):
+//   1. At load time, register ALL adapters in MODE_DYNAMIC via *_create_dynamic.
+//      The adapter handles are kept alive on the Go side (NOT freed) because the
+//      controller identifies adapters by object identity at apply() time.
+//   2. Per request, build a transient AdapterConfig holding the chosen adapter
+//      (or none) and set it on the generation_config via *_genconfig_set_one /
+//      _clear. generate() then applies it without reloading the model.
+// Everything here is additive: the non-LoRA create_cgo paths are untouched and
+// only used when no adapter is configured.
+
+// Build an LLM pipeline in MODE_DYNAMIC with the given adapters all registered.
+// On success, out_adapters[i] receives the handle for lora_paths[i]; the caller
+// owns these handles and must keep them alive for the pipeline's lifetime, then
+// free them with ov_genai_adapter_free.
+static ov_status_e ov_genai_llm_pipeline_create_dynamic_cgo(const char* models_path,
+                                                            const char* device,
+                                                            const char** lora_paths,
+                                                            float* alphas,
+                                                            size_t n,
+                                                            ov_genai_adapter** out_adapters,
+                                                            ov_genai_llm_pipeline** pipe) {
+	ov_genai_adapter_config* cfg = NULL;
+	ov_status_e st = ov_genai_adapter_config_create(OV_GENAI_ADAPTER_MODE_DYNAMIC, &cfg);
+	if (st != OK) {
+		return st;
+	}
+	size_t i = 0;
+	for (i = 0; i < n; i++) {
+		out_adapters[i] = NULL;
+		st = ov_genai_adapter_create(lora_paths[i], &out_adapters[i]);
+		if (st != OK) {
+			goto fail;
+		}
+		st = ov_genai_adapter_config_add(cfg, out_adapters[i], alphas[i]);
+		if (st != OK) {
+			goto fail;
+		}
+	}
+	st = ov_genai_llm_pipeline_create_with_adapters(models_path, device, cfg, 0, pipe);
+	if (st != OK) {
+		goto fail;
+	}
+	ov_genai_adapter_config_free(cfg);
+	return OK;
+fail:
+	for (size_t j = 0; j < n; j++) {
+		if (out_adapters[j]) { ov_genai_adapter_free(out_adapters[j]); out_adapters[j] = NULL; }
+	}
+	ov_genai_adapter_config_free(cfg);
+	return st;
+}
+
+static ov_status_e ov_genai_vlm_pipeline_create_dynamic_cgo(const char* models_path,
+                                                            const char* device,
+                                                            const char** lora_paths,
+                                                            float* alphas,
+                                                            size_t n,
+                                                            ov_genai_adapter** out_adapters,
+                                                            ov_genai_vlm_pipeline** pipe) {
+	ov_genai_adapter_config* cfg = NULL;
+	ov_status_e st = ov_genai_adapter_config_create(OV_GENAI_ADAPTER_MODE_DYNAMIC, &cfg);
+	if (st != OK) {
+		return st;
+	}
+	size_t i = 0;
+	for (i = 0; i < n; i++) {
+		out_adapters[i] = NULL;
+		st = ov_genai_adapter_create(lora_paths[i], &out_adapters[i]);
+		if (st != OK) {
+			goto fail;
+		}
+		st = ov_genai_adapter_config_add(cfg, out_adapters[i], alphas[i]);
+		if (st != OK) {
+			goto fail;
+		}
+	}
+	st = ov_genai_vlm_pipeline_create_with_adapters(models_path, device, cfg, 0, pipe);
+	if (st != OK) {
+		goto fail;
+	}
+	ov_genai_adapter_config_free(cfg);
+	return OK;
+fail:
+	for (size_t j = 0; j < n; j++) {
+		if (out_adapters[j]) { ov_genai_adapter_free(out_adapters[j]); out_adapters[j] = NULL; }
+	}
+	ov_genai_adapter_config_free(cfg);
+	return st;
+}
+
+// Per-request multi-adapter selection: stack n (already-registered) adapters,
+// each at its own alpha, onto a generation_config. n==0 selects "no adapter"
+// (empty dynamic config), cleanly disabling LoRA for this call. GenAI sums the
+// stacked LoRA deltas; note adapters carrying constant tensors cannot be stacked
+// (GenAI restriction) — those must be used one at a time.
+static ov_status_e ov_genai_genconfig_set_adapters_multi(ov_genai_generation_config* gc,
+                                                         ov_genai_adapter** adapters,
+                                                         float* alphas,
+                                                         size_t n) {
+	ov_genai_adapter_config* cfg = NULL;
+	ov_status_e st = ov_genai_adapter_config_create(OV_GENAI_ADAPTER_MODE_DYNAMIC, &cfg);
+	if (st != OK) {
+		return st;
+	}
+	for (size_t i = 0; i < n; i++) {
+		if (!adapters[i]) {
+			continue;
+		}
+		st = ov_genai_adapter_config_add(cfg, adapters[i], alphas[i]);
+		if (st != OK) {
+			ov_genai_adapter_config_free(cfg);
+			return st;
+		}
+	}
+	st = ov_genai_generation_config_set_adapters(gc, cfg);
+	ov_genai_adapter_config_free(cfg);
+	return st;
 }
 
 */
@@ -93,6 +215,73 @@ type SamplingParams struct {
 	StopIds        []string
 	RepeatLastN    int
 	EnableThinking bool
+
+	// LoRA (optional, per-request). Lora is the registry of adapters registered
+	// at load time; nil = no LoRA involved at all (legacy behavior).
+	//
+	// Two ways to select adapters for this generation (LoraSpecs wins if set):
+	//   - LoraSpecs: stack one OR many adapters, each with its own alpha.
+	//   - LoraName/LoraAlpha: convenience for the single-adapter case.
+	// An empty selection (Lora non-nil but no name/specs) explicitly disables
+	// LoRA for this call.
+	Lora      *LoraRegistry
+	LoraName  string
+	LoraAlpha float32
+	LoraSpecs []LoraSpec
+
+	// LoraDisable forces "no adapter" for this generation even when adapters
+	// are registered at load time. Without it, an empty selection leaves the
+	// load-time adapter(s) active (the session-fixed `ollama run --lora` case).
+	LoraDisable bool
+}
+
+// LoraSpec selects one registered adapter by name at a blending weight for a
+// single generation. Multiple specs stack (their LoRA deltas sum).
+type LoraSpec struct {
+	Name  string
+	Alpha float32
+}
+
+// LoraRegistry holds the LoRA adapters registered with a pipeline at load time
+// (MODE_DYNAMIC). The adapter handles must outlive the pipeline, so they are
+// kept here and only released by Free(). Switching among them per request does
+// NOT reload the model.
+type LoraRegistry struct {
+	adapters map[string]*C.ov_genai_adapter // name → handle
+}
+
+// Names returns the registered adapter names (for logging / validation).
+func (r *LoraRegistry) Names() []string {
+	if r == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.adapters))
+	for n := range r.adapters {
+		names = append(names, n)
+	}
+	return names
+}
+
+// Has reports whether an adapter with the given name is registered.
+func (r *LoraRegistry) Has(name string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.adapters[name]
+	return ok
+}
+
+// Free releases all adapter handles. Call after the pipeline is freed.
+func (r *LoraRegistry) Free() {
+	if r == nil {
+		return
+	}
+	for n, a := range r.adapters {
+		if a != nil {
+			C.ov_genai_adapter_free(a)
+		}
+		delete(r.adapters, n)
+	}
 }
 
 // type Model struct {
@@ -249,6 +438,178 @@ func CreateVlmPipeline(modelsPath string, device string) VlmModel {
 	return pipeline
 }
 
+// loraName derives a short, stable adapter name from its file path (the base
+// filename without extension), used as the per-request selection key.
+func loraName(path string) string {
+	base := filepath.Base(path)
+	if ext := filepath.Ext(base); ext != "" {
+		base = base[:len(base)-len(ext)]
+	}
+	return base
+}
+
+// buildLoraCArrays converts adapter paths into the C arrays expected by the
+// dynamic-create wrappers. Returns the C string array, alpha array, and a
+// cleanup func to free the C strings. All adapters default to alpha=1.0.
+func buildLoraCArrays(loraPaths []string) (**C.char, *C.float, func()) {
+	n := len(loraPaths)
+	cPaths := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(uintptr(0))))
+	cAlphas := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.float(0))))
+	pathSlice := (*[1 << 16]*C.char)(cPaths)[:n:n]
+	alphaSlice := (*[1 << 16]C.float)(cAlphas)[:n:n]
+	for i, p := range loraPaths {
+		pathSlice[i] = C.CString(p)
+		alphaSlice[i] = C.float(1.0)
+	}
+	cleanup := func() {
+		for i := 0; i < n; i++ {
+			C.free(unsafe.Pointer(pathSlice[i]))
+		}
+		C.free(cPaths)
+		C.free(cAlphas)
+	}
+	return (**C.char)(cPaths), (*C.float)(cAlphas), cleanup
+}
+
+// CreatePipelineWithLora builds an LLM pipeline in MODE_DYNAMIC with ALL given
+// LoRA adapters registered, so generation can switch among them per request
+// (see SamplingParams.LoraName). It is the LoRA-aware counterpart of
+// CreatePipeline; callers fall back to CreatePipeline when loraPaths is empty so
+// the existing path is completely unaffected. Returns the pipeline plus a
+// LoraRegistry that owns the adapter handles (keep it alive for the pipeline's
+// lifetime; Free() it after the pipeline is freed). NPU note: the NPU
+// constructor doesn't take adapters, so LoRA there falls back to a plain load.
+func CreatePipelineWithLora(modelsPath string, device string, loraPaths []string) (Model, *LoraRegistry) {
+	if len(loraPaths) == 0 || device == "NPU" {
+		if len(loraPaths) > 0 {
+			log.Printf("LoRA requested but unsupported on device %s; loading without adapters", device)
+		}
+		return CreatePipeline(modelsPath, device), nil
+	}
+
+	cModelsPath := C.CString(modelsPath)
+	cDevice := C.CString(device)
+	defer C.free(unsafe.Pointer(cModelsPath))
+	defer C.free(unsafe.Pointer(cDevice))
+
+	n := len(loraPaths)
+	cPaths, cAlphas, cleanup := buildLoraCArrays(loraPaths)
+	defer cleanup()
+
+	outAdapters := make([]*C.ov_genai_adapter, n)
+	var pipeline *C.ov_genai_llm_pipeline
+	st := C.ov_genai_llm_pipeline_create_dynamic_cgo(
+		cModelsPath, cDevice, cPaths, cAlphas, C.size_t(n),
+		(**C.ov_genai_adapter)(unsafe.Pointer(&outAdapters[0])), &pipeline)
+	if st != C.OK {
+		log.Printf("failed to create LLM pipeline with %d LoRA adapter(s) (status %d); falling back to plain load", n, int(st))
+		return CreatePipeline(modelsPath, device), nil
+	}
+
+	reg := &LoraRegistry{adapters: make(map[string]*C.ov_genai_adapter, n)}
+	for i, p := range loraPaths {
+		reg.adapters[loraName(p)] = outAdapters[i]
+	}
+	log.Printf("LLM pipeline loaded with %d LoRA adapter(s) (MODE_DYNAMIC): %v", n, reg.Names())
+	return pipeline, reg
+}
+
+// CreateVlmPipelineWithLora is the VLM counterpart of CreatePipelineWithLora.
+// Adapters apply to the language model; the vision encoder is unchanged.
+func CreateVlmPipelineWithLora(modelsPath string, device string, loraPaths []string) (VlmModel, *LoraRegistry) {
+	if len(loraPaths) == 0 || device == "NPU" {
+		if len(loraPaths) > 0 {
+			log.Printf("LoRA requested but unsupported on device %s; loading VLM without adapters", device)
+		}
+		return CreateVlmPipeline(modelsPath, device), nil
+	}
+
+	cModelsPath := C.CString(modelsPath)
+	cDevice := C.CString(device)
+	defer C.free(unsafe.Pointer(cModelsPath))
+	defer C.free(unsafe.Pointer(cDevice))
+
+	n := len(loraPaths)
+	cPaths, cAlphas, cleanup := buildLoraCArrays(loraPaths)
+	defer cleanup()
+
+	outAdapters := make([]*C.ov_genai_adapter, n)
+	var pipeline *C.ov_genai_vlm_pipeline
+	st := C.ov_genai_vlm_pipeline_create_dynamic_cgo(
+		cModelsPath, cDevice, cPaths, cAlphas, C.size_t(n),
+		(**C.ov_genai_adapter)(unsafe.Pointer(&outAdapters[0])), &pipeline)
+	if st != C.OK {
+		log.Printf("failed to create VLM pipeline with %d LoRA adapter(s) (status %d); falling back to plain load", n, int(st))
+		return CreateVlmPipeline(modelsPath, device), nil
+	}
+
+	reg := &LoraRegistry{adapters: make(map[string]*C.ov_genai_adapter, n)}
+	for i, p := range loraPaths {
+		reg.adapters[loraName(p)] = outAdapters[i]
+	}
+	log.Printf("VLM pipeline loaded with %d LoRA adapter(s) (MODE_DYNAMIC): %v", n, reg.Names())
+	return pipeline, reg
+}
+
+// applyLoraToConfig sets the per-request adapter selection on a generation
+// config, based on SamplingParams. No-op when no LoRA registry is present.
+// Returns nothing; failures are logged but never abort generation.
+func applyLoraToConfig(cConfig *C.ov_genai_generation_config, p *SamplingParams) {
+	if p == nil || p.Lora == nil {
+		return // no LoRA involved — legacy behavior, config untouched
+	}
+
+	// Normalize selection into a list of (name, alpha). LoraSpecs takes
+	// precedence; otherwise fall back to the single LoraName/LoraAlpha.
+	specs := p.LoraSpecs
+	if len(specs) == 0 && p.LoraName != "" {
+		specs = []LoraSpec{{Name: p.LoraName, Alpha: p.LoraAlpha}}
+	}
+
+	// No per-request selection and no explicit disable: leave the config
+	// untouched so the adapter(s) registered at load time stay active. This is
+	// the session-fixed case (`ollama run --lora ...`) — the load-time adapter
+	// should apply to every generation without the request having to re-name it.
+	if len(specs) == 0 && !p.LoraDisable {
+		return
+	}
+
+	// Resolve names → handles, dropping (with a warning) any unregistered name.
+	// An empty resolved set + LoraDisable means "no adapter this call".
+	handles := make([]*C.ov_genai_adapter, 0, len(specs))
+	alphas := make([]C.float, 0, len(specs))
+	for _, s := range specs {
+		a, ok := p.Lora.adapters[s.Name]
+		if !ok {
+			log.Printf("LoRA %q not registered (have %v); skipping it", s.Name, p.Lora.Names())
+			continue
+		}
+		alpha := s.Alpha
+		if alpha == 0 {
+			alpha = 1.0
+		}
+		handles = append(handles, a)
+		alphas = append(alphas, C.float(alpha))
+	}
+
+	if len(handles) == 0 {
+		// Explicitly select "no adapter" for this generation (disable LoRA).
+		if st := C.ov_genai_genconfig_set_adapters_multi(cConfig, nil, nil, 0); st != C.OK {
+			log.Printf("failed to clear LoRA on generation config (status %d)", int(st))
+		}
+		return
+	}
+
+	if st := C.ov_genai_genconfig_set_adapters_multi(
+		cConfig,
+		(**C.ov_genai_adapter)(unsafe.Pointer(&handles[0])),
+		(*C.float)(unsafe.Pointer(&alphas[0])),
+		C.size_t(len(handles)),
+	); st != C.OK {
+		log.Printf("failed to set %d LoRA adapter(s) on generation config (status %d)", len(handles), int(st))
+	}
+}
+
 func PrintGenaiMetrics(metrics *C.ov_genai_perf_metrics) {
 
 	log.Printf("Genai Metrics info:")
@@ -354,6 +715,9 @@ func SetSamplingParams(samplingparameters *SamplingParams) *C.ov_genai_generatio
 		}
 		C.ov_genai_generation_config_set_stop_strings(cConfig, (**C.char)(cStopStrings), C.size_t(len(samplingparameters.StopString)))
 	}
+
+	// Per-request LoRA selection (no-op unless a registry + name is set).
+	applyLoraToConfig(cConfig, samplingparameters)
 
 	return cConfig
 }

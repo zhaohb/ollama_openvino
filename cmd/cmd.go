@@ -628,6 +628,25 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 		opts.KeepAlive = &api.Duration{Duration: d}
 	}
 
+	// LoRA: resolve to an absolute path so the server (which may run with a
+	// different working directory) can open the same file the user pointed at.
+	lora, err := cmd.Flags().GetString("lora")
+	if err != nil {
+		return err
+	}
+	if lora != "" {
+		abs, err := filepath.Abs(lora)
+		if err != nil {
+			return fmt.Errorf("resolving --lora path: %w", err)
+		}
+		opts.Lora = abs
+	}
+	loraAlpha, err := cmd.Flags().GetFloat32("lora-alpha")
+	if err != nil {
+		return err
+	}
+	opts.LoraAlpha = loraAlpha
+
 	prompts := args[1:]
 	// prepend stdin to the prompt if provided
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -1455,6 +1474,8 @@ type runOptions struct {
 	ModelType    string
 	InferDevice  string
 	ModelBackend string
+	Lora         string
+	LoraAlpha    float32
 }
 
 func (r runOptions) Copy() runOptions {
@@ -1662,11 +1683,13 @@ func chat(cmd *cobra.Command, opts runOptions) (*api.Message, error) {
 	}
 
 	req := &api.ChatRequest{
-		Model:    opts.Model,
-		Messages: opts.Messages,
-		Format:   json.RawMessage(opts.Format),
-		Options:  opts.Options,
-		Think:    opts.Think,
+		Model:     opts.Model,
+		Messages:  opts.Messages,
+		Format:    json.RawMessage(opts.Format),
+		Options:   opts.Options,
+		Think:     opts.Think,
+		Lora:      opts.Lora,
+		LoraAlpha: opts.LoraAlpha,
 	}
 
 	if opts.KeepAlive != nil {
@@ -1808,6 +1831,8 @@ func generate(cmd *cobra.Command, opts runOptions) error {
 		Options:      opts.Options,
 		KeepAlive:    opts.KeepAlive,
 		Think:        opts.Think,
+		Lora:         opts.Lora,
+		LoraAlpha:    opts.LoraAlpha,
 	}
 
 	if err := client.Generate(ctx, &request, fn); err != nil {
@@ -2176,6 +2201,10 @@ func NewCLI() *cobra.Command {
 	runCmd.Flags().String("format", "", "Response format (e.g. json)")
 	runCmd.Flags().String("think", "", "Enable thinking mode: true/false or high/medium/low for supported models")
 	runCmd.Flags().Lookup("think").NoOptDefVal = "true"
+	// LoRA (OpenVINO GenAI backend only): apply a raw .safetensors adapter for
+	// the whole session, bypassing `ollama create` / GGUF conversion entirely.
+	runCmd.Flags().String("lora", "", "Path to a LoRA adapter (.safetensors) to apply for this session (OpenVINO backend)")
+	runCmd.Flags().Float32("lora-alpha", 1.0, "LoRA blending weight (alpha) for --lora")
 	runCmd.Flags().Bool("hidethinking", false, "Hide thinking output (if provided)")
 	runCmd.Flags().Bool("truncate", false, "For embedding models: truncate inputs exceeding context length (default: true). Set --truncate=false to error instead")
 	runCmd.Flags().Int("dimensions", 0, "Truncate output embeddings to specified dimension (embedding models only)")

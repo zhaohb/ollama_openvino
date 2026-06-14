@@ -83,6 +83,14 @@ type Server struct {
 	modelPath   string
 	modelName   string
 	inferDevice string
+
+	// optional LoRA adapter paths (empty = no adapter; preserves existing
+	// behavior). All registered at load in MODE_DYNAMIC; a request selects one
+	// by name (the file's base name without extension).
+	loraPaths []string
+
+	// registry of adapters registered with the pipeline (nil when no LoRA).
+	loraReg *common.LoraRegistry
 }
 
 func (s *Server) allNil() bool {
@@ -239,7 +247,22 @@ type CompletionRequest struct {
 	// last user turn (see lastUserImagesFromMessages); else top-level image_data is used.
 	Messages []api.Message `json:"messages,omitempty"`
 
+	// Optional per-request LoRA selection. Two forms (Loras wins if non-empty):
+	//   - Loras: stack one OR many registered adapters, each with its own alpha.
+	//   - Lora/LoraAlpha: convenience for the single-adapter case.
+	// Ignored when started without --lora; an empty selection disables LoRA.
+	Lora      string         `json:"lora,omitempty"`
+	LoraAlpha float32        `json:"lora_alpha,omitempty"`
+	Loras     []LoraSelector `json:"loras,omitempty"`
+
 	Options *api.Options
+}
+
+// LoraSelector is a per-request adapter selection: a registered adapter name
+// and its blending weight. Multiple entries stack.
+type LoraSelector struct {
+	Name  string  `json:"name"`
+	Alpha float32 `json:"alpha,omitempty"`
 }
 
 type Timings struct {
@@ -331,6 +354,17 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 	samplingParams.RepeatLastN = req.Options.RepeatLastN
 	samplingParams.RepeatPenalty = req.Options.RepeatPenalty
 	samplingParams.EnableThinking = req.Options.EnableThinking
+	// Per-request LoRA selection (no-op when registry is nil). Loras (multi)
+	// wins over the single Lora field when provided.
+	samplingParams.Lora = s.loraReg
+	samplingParams.LoraName = req.Lora
+	samplingParams.LoraAlpha = req.LoraAlpha
+	if len(req.Loras) > 0 {
+		samplingParams.LoraSpecs = make([]common.LoraSpec, 0, len(req.Loras))
+		for _, l := range req.Loras {
+			samplingParams.LoraSpecs = append(samplingParams.LoraSpecs, common.LoraSpec{Name: l.Name, Alpha: l.Alpha})
+		}
+	}
 
 	seq, err := s.NewSequence(req.Prompt, req.Images, NewSequenceParams{
 		numPredict:     req.Options.NumPredict,
@@ -546,6 +580,21 @@ func (m *multiLPath) String() string {
 	return strings.Join(*m, ", ")
 }
 
+// parseLoraPaths splits a comma-separated --lora value into trimmed, non-empty
+// adapter paths. Returns nil for an empty value so the no-LoRA path is taken.
+func parseLoraPaths(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (s *Server) loadModel(mpath string, mname string, device string) {
 	var err error
 	ov_ir_dir := strings.ReplaceAll(mname, ":", "_")
@@ -581,8 +630,14 @@ func (s *Server) loadModel(mpath string, mname string, device string) {
 		ov_model_path = filepath.Join(tempDir, subdirs[0])
 	}
 
-	s.vlmmodel = common.CreateVlmPipeline(ov_model_path, device)
-	log.Printf("The model had been load by GenAI, ov_model_path: %s , %s", ov_model_path, device)
+	// LoRA-aware load: when no adapter paths are set, CreateVlmPipelineWithLora
+	// falls back to the plain CreateVlmPipeline, so the existing path is unchanged.
+	if len(s.loraPaths) > 0 {
+		s.vlmmodel, s.loraReg = common.CreateVlmPipelineWithLora(ov_model_path, device, s.loraPaths)
+	} else {
+		s.vlmmodel = common.CreateVlmPipeline(ov_model_path, device)
+	}
+	log.Printf("The model had been load by GenAI, ov_model_path: %s , %s, lora: %v", ov_model_path, device, s.loraPaths)
 	s.status = ServerStatusReady
 	s.ready.Done()
 }
@@ -597,6 +652,7 @@ func Execute(args []string) error {
 	parallel := fs.Int("parallel", 1, "Number of sequences to handle simultaneously")
 	port := fs.Int("port", 8088, "Port to expose the server on")
 	verbose := fs.Bool("verbose", false, "verbose output (default: disabled)")
+	lora := fs.String("lora", "", "Comma-separated LoRA adapter paths (.safetensors) to register; select per request by base name (optional)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Runner usage\n")
@@ -627,8 +683,9 @@ func Execute(args []string) error {
 	slog.Info("starting go genairunner")
 
 	server := &Server{
-		seqs:   make([]*common.Sequence, *parallel),
-		status: ServerStatusLaunched,
+		seqs:      make([]*common.Sequence, *parallel),
+		status:    ServerStatusLaunched,
+		loraPaths: parseLoraPaths(*lora),
 	}
 
 	server.ready.Add(1)

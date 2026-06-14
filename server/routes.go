@@ -185,13 +185,22 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 	return runner.llama, model, &opts, nil
 }
 
-func (s *Server) scheduleGenaiRunner(ctx context.Context, name string, modelbackend string, modeltype string, inferdevice string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration) (genaiserver.GenaiServer, *Model, *api.Options, error) {
+func (s *Server) scheduleGenaiRunner(ctx context.Context, name string, modelbackend string, modeltype string, inferdevice string, loraPath string, caps []model.Capability, requestOpts map[string]any, keepAlive *api.Duration) (genaiserver.GenaiServer, *Model, *api.Options, error) {
 	if name == "" {
 		return nil, nil, nil, fmt.Errorf("model %w", errRequired)
 	}
 	model, err := GetModel(name)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+
+	// LoRA via request (OpenVINO only): inject the raw .safetensors path into the
+	// model's AdapterPaths so the existing load path forwards it to the runner as
+	// --lora — no `ollama create` / GGUF conversion involved. A change here is
+	// picked up by the scheduler's AdapterPaths comparison, so switching --lora
+	// across runs reloads the pipeline with the new adapter.
+	if loraPath != "" && modelbackend == "OpenVINO" {
+		model.AdapterPaths = []string{loraPath}
 	}
 
 	opts, err := s.modelOptions(model, requestOpts)
@@ -697,7 +706,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		log.Printf("GenerateHandler model type: %s", m.ModelType)
 		log.Printf("GenerateHandler model infer device: %s", m.InferDevice)
 
-		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), m.ModelBackend, m.ModelType, m.InferDevice, caps, req.Options, req.KeepAlive)
+		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), m.ModelBackend, m.ModelType, m.InferDevice, req.Lora, caps, req.Options, req.KeepAlive)
 
 		if errors.Is(err, errCapabilityCompletion) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
@@ -2773,7 +2782,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		// Messages (including tool calls and tool responses) are passed directly
 		// to the GenAI C API which builds chat_history and applies the chat
 		// template internally via generate_with_history.
-		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), m.ModelBackend, m.ModelType, m.InferDevice, caps, req.Options, req.KeepAlive)
+		r, _, opts, err := s.scheduleGenaiRunner(c.Request.Context(), name.String(), m.ModelBackend, m.ModelType, m.InferDevice, req.Lora, caps, req.Options, req.KeepAlive)
 		if errors.Is(err, errCapabilityCompletion) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
 			return
