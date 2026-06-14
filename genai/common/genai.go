@@ -75,6 +75,14 @@ import (
 	llamaserver "github.com/ollama/ollama/llm/llama"
 )
 
+// NOTE on thread-safety: the OpenVINO GenAI LLM/VLM pipelines are NOT
+// thread-safe — each holds its own inference and KV-cache state and allows only
+// one in-flight generate. These Generate* functions therefore must be called
+// serially. That is guaranteed by the runners: every generate happens inside
+// processBatch, which runs in a single run() goroutine and holds Server.mu for
+// the whole call. Do NOT call generate from any other goroutine/path without
+// adding serialization here.
+
 type SamplingParams struct {
 	TopK           int
 	TopP           float32

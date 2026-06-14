@@ -73,6 +73,10 @@ type Server struct {
 	// next sequence for prompt processing to avoid starvation
 	nextSeq int
 
+	// number of requests currently queued in completion() waiting for a free
+	// sequence slot (guarded by mu) — surfaced in logs for visibility.
+	queued int
+
 	// model metadata for load operation
 	modelPath   string
 	modelName   string
@@ -178,6 +182,8 @@ func (s *Server) processBatch() error {
 			}
 		}
 		s.removeSequence(i, "")
+		// A slot just freed — wake any requests queued in completion().
+		s.cond.Broadcast()
 	}
 	return nil
 }
@@ -322,24 +328,59 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	found := false
+	// Claim a sequence slot, WAITING for one to free up rather than rejecting.
+	// The number of slots (len(s.seqs) == --parallel) bounds how many requests
+	// are in flight at once; the rest queue here. A request whose client
+	// disconnects (ctx cancelled) stops waiting instead of blocking forever —
+	// a watcher goroutine broadcasts the cond on cancellation to wake us.
+	reqCtx := r.Context()
+	watchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-reqCtx.Done():
+			s.mu.Lock()
+			s.cond.Broadcast()
+			s.mu.Unlock()
+		case <-watchDone:
+		}
+	}()
+	defer close(watchDone)
 
-	for i, sq := range s.seqs {
-		if sq == nil {
-			s.seqs[i] = seq
-			s.cond.Signal()
-			found = true
+	s.mu.Lock()
+	claimed := false
+	counted := false // whether we've added ourselves to the queued tally
+	for {
+		if reqCtx.Err() != nil {
+			if counted {
+				s.queued--
+			}
+			log.Printf("queue: request cancelled while waiting (%d still queued)", s.queued)
+			s.mu.Unlock()
+			return // client gave up while queued
+		}
+		for i, sq := range s.seqs {
+			if sq == nil {
+				s.seqs[i] = seq
+				s.cond.Signal() // wake the run loop to process it
+				claimed = true
+				break
+			}
+		}
+		if claimed {
+			if counted {
+				s.queued--
+			}
 			break
 		}
+		// No free slot: join the queue (count once) and wait.
+		if !counted {
+			s.queued++
+			counted = true
+			log.Printf("queue: no free slot, request waiting (%d now queued, %d slots)", s.queued, len(s.seqs))
+		}
+		s.cond.Wait() // wait for a slot to free (or for ctx cancel)
 	}
-
 	s.mu.Unlock()
-
-	if !found {
-		http.Error(w, "could not find an available sequence", http.StatusInternalServerError)
-		return
-	}
 
 	for {
 		select {
